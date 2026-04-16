@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from switchgpt.errors import SwitchError
 from switchgpt.models import AccountRecord, AccountState
 from switchgpt.secret_store import SessionSecret
 from switchgpt.switch_history import SwitchEvent
@@ -9,7 +10,9 @@ from switchgpt.switch_service import SwitchService
 
 
 class FakeAccountStore:
-    def __init__(self, accounts, active_account_index=None) -> None:
+    def __init__(
+        self, accounts, active_account_index=None, save_runtime_state_error: Exception | None = None
+    ) -> None:
         self._snapshot = type(
             "Snapshot",
             (),
@@ -20,6 +23,7 @@ class FakeAccountStore:
             },
         )()
         self.saved_runtime_state = None
+        self._save_runtime_state_error = save_runtime_state_error
 
     def load(self):
         return self._snapshot
@@ -31,6 +35,8 @@ class FakeAccountStore:
         raise ValueError(index)
 
     def save_runtime_state(self, active_account_index, switched_at):
+        if self._save_runtime_state_error is not None:
+            raise self._save_runtime_state_error
         self.saved_runtime_state = (active_account_index, switched_at)
 
 
@@ -139,8 +145,49 @@ def test_failed_auth_verification_does_not_update_active_account() -> None:
         history_store=FakeHistoryStore(),
     )
 
-    with pytest.raises(Exception):
+    with pytest.raises(SwitchError):
         service.switch_to(index=1)
 
     assert service._account_store.saved_runtime_state is None
     assert service._history_store.events[-1].result == "needs-reauth"
+
+
+def test_missing_secret_records_failure_history_before_raising() -> None:
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        secret_store=FakeSecretStore(None),
+        managed_browser=FakeManagedBrowser(authenticated=True),
+        history_store=FakeHistoryStore(),
+    )
+
+    with pytest.raises(SwitchError, match="Stored session secret is missing"):
+        service.switch_to(index=1)
+
+    assert service._account_store.saved_runtime_state is None
+    assert service._history_store.events[-1].result == "failure"
+    assert "Stored session secret is missing" in service._history_store.events[-1].message
+
+
+def test_runtime_state_persistence_failure_records_failure_history() -> None:
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+            save_runtime_state_error=RuntimeError("metadata write failed"),
+        ),
+        secret_store=FakeSecretStore(
+            SessionSecret(session_token="session-2", csrf_token=None)
+        ),
+        managed_browser=FakeManagedBrowser(authenticated=True),
+        history_store=FakeHistoryStore(),
+    )
+
+    with pytest.raises(RuntimeError, match="metadata write failed"):
+        service.switch_to(index=1)
+
+    assert service._account_store.saved_runtime_state is None
+    assert service._history_store.events[-1].result == "failure"
+    assert service._history_store.events[-1].message == "metadata write failed"

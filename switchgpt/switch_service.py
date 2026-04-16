@@ -35,40 +35,76 @@ class SwitchService:
 
     def _switch_account(self, account, *, mode: str) -> SwitchResult:
         previous_active_index = self._account_store.load().active_account_index
-        secret = self._secret_store.read(account.keychain_key)
-        if secret is None:
-            raise SwitchError(f"Stored session secret is missing for slot {account.index}.")
-
         occurred_at = datetime.now(UTC)
-        context, page = self._managed_browser.ensure_runtime()
-        self._managed_browser.prepare_switch(
-            context,
-            page,
-            session_token=secret.session_token,
-            csrf_token=secret.csrf_token,
-        )
-        if not self._managed_browser.is_authenticated(page):
-            self._history_store.append(
-                SwitchEvent(
+        event_recorded = False
+        try:
+            secret = self._secret_store.read(account.keychain_key)
+            if secret is None:
+                raise SwitchError(
+                    f"Stored session secret is missing for slot {account.index}."
+                )
+
+            context, page = self._managed_browser.ensure_runtime()
+            self._managed_browser.prepare_switch(
+                context,
+                page,
+                session_token=secret.session_token,
+                csrf_token=secret.csrf_token,
+            )
+            if not self._managed_browser.is_authenticated(page):
+                self._append_event(
                     occurred_at=occurred_at,
-                    from_account_index=previous_active_index,
-                    to_account_index=account.index,
+                    previous_active_index=previous_active_index,
+                    account_index=account.index,
                     mode=mode,
                     result="needs-reauth",
                     message=f"Authenticated state verification failed for slot {account.index}.",
                 )
-            )
-            raise SwitchError(f"Account slot {account.index} likely needs reauthentication.")
+                event_recorded = True
+                raise SwitchError(
+                    f"Account slot {account.index} likely needs reauthentication."
+                )
 
-        self._account_store.save_runtime_state(account.index, occurred_at)
+            self._account_store.save_runtime_state(account.index, occurred_at)
+        except Exception as exc:
+            if not event_recorded:
+                self._append_event(
+                    occurred_at=occurred_at,
+                    previous_active_index=previous_active_index,
+                    account_index=account.index,
+                    mode=mode,
+                    result="failure",
+                    message=str(exc),
+                )
+            raise
+
+        self._append_event(
+            occurred_at=occurred_at,
+            previous_active_index=previous_active_index,
+            account_index=account.index,
+            mode=mode,
+            result="success",
+            message=None,
+        )
+        return SwitchResult(account=account, mode=mode)
+
+    def _append_event(
+        self,
+        *,
+        occurred_at: datetime,
+        previous_active_index: int | None,
+        account_index: int,
+        mode: str,
+        result: str,
+        message: str | None,
+    ) -> None:
         self._history_store.append(
             SwitchEvent(
                 occurred_at=occurred_at,
                 from_account_index=previous_active_index,
-                to_account_index=account.index,
+                to_account_index=account_index,
                 mode=mode,
-                result="success",
-                message=None,
+                result=result,
+                message=message,
             )
         )
-        return SwitchResult(account=account, mode=mode)
