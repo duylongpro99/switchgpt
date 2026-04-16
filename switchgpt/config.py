@@ -1,7 +1,7 @@
 from dataclasses import dataclass
-from pathlib import Path
 import os
 import platform
+from pathlib import Path
 
 from .errors import UnsupportedPlatformError
 
@@ -13,6 +13,8 @@ class Settings:
     keychain_service: str
     slot_count: int
     chatgpt_base_url: str
+    managed_profile_dir: Path
+    switch_history_path: Path
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -24,6 +26,8 @@ class Settings:
             keychain_service="switchgpt",
             slot_count=3,
             chatgpt_base_url="https://chatgpt.com",
+            managed_profile_dir=data_dir / "playwright-profile",
+            switch_history_path=data_dir / "switch-history.jsonl",
         )
 
 

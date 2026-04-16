@@ -16,3 +16,11 @@ class SecretStoreError(SwitchGptError):
 
 class BrowserRegistrationError(SwitchGptError):
     """Raised when browser-based registration cannot verify or capture state."""
+
+
+class ManagedBrowserError(SwitchGptError):
+    """Raised when the managed Playwright runtime cannot be used."""
+
+
+class SwitchError(SwitchGptError):
+    """Raised when a manual switch cannot be completed."""
