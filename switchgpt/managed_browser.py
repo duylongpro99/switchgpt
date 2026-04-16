@@ -41,4 +41,6 @@ class ManagedBrowser:
         body = page.locator("body").inner_text().lower()
         if any(marker in lowered_url for marker in ("/login", "/signin", "/auth")):
             return False
-        return "log in" not in body and "sign in" not in body
+        if "sign in" in body or "log in" in body or "login" in body:
+            return False
+        return "chatgpt" in body or "open sidebar" in body

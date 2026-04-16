@@ -44,8 +44,18 @@ def test_prepare_switch_clears_and_injects_cookies() -> None:
     )
 
     assert context.cookies_cleared is True
+    assert len(context.cookies_added) == 2
     assert context.cookies_added[0]["name"] == "__Secure-next-auth.session-token"
+    assert context.cookies_added[1]["name"] == "__Host-next-auth.csrf-token"
     assert page.visited[-1] == "https://chatgpt.com"
+
+
+def test_is_authenticated_accepts_authenticated_page() -> None:
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=None)
+    page = FakePage()
+    page.text = "ChatGPT Open sidebar"
+
+    assert browser.is_authenticated(page) is True
 
 
 def test_is_authenticated_rejects_login_page() -> None:
