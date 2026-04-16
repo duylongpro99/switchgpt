@@ -242,3 +242,23 @@ def test_explicit_switch_metadata_load_failure_records_failure_history() -> None
     assert service._history_store.events[-1].to_account_index == 1
     assert service._history_store.events[-1].result == "failure"
     assert service._history_store.events[-1].message == "metadata load failed"
+
+
+def test_auto_target_metadata_load_failure_records_failure_history_without_target() -> None:
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+            load_error=RuntimeError("metadata load failed"),
+        ),
+        secret_store=FakeSecretStore(None),
+        managed_browser=FakeManagedBrowser(authenticated=True),
+        history_store=FakeHistoryStore(),
+    )
+
+    with pytest.raises(RuntimeError, match="metadata load failed"):
+        service.switch_next()
+
+    assert service._history_store.events[-1].to_account_index is None
+    assert service._history_store.events[-1].result == "failure"
+    assert service._history_store.events[-1].message == "metadata load failed"

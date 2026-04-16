@@ -8,7 +8,7 @@ from pathlib import Path
 class SwitchEvent:
     occurred_at: datetime
     from_account_index: int | None
-    to_account_index: int
+    to_account_index: int | None
     mode: str
     result: str
     message: str | None

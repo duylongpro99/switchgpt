@@ -19,14 +19,30 @@ class SwitchService:
         self._history_store = history_store
 
     def switch_next(self) -> SwitchResult:
-        snapshot = self._account_store.load()
-        candidates = [
-            account
-            for account in snapshot.accounts
-            if account.index != snapshot.active_account_index
-        ]
-        if not candidates:
-            raise SwitchError("No alternative registered account is available for switching.")
+        occurred_at = datetime.now(UTC)
+        previous_active_index = None
+        try:
+            snapshot = self._account_store.load()
+            previous_active_index = snapshot.active_account_index
+            candidates = [
+                account
+                for account in snapshot.accounts
+                if account.index != snapshot.active_account_index
+            ]
+            if not candidates:
+                raise SwitchError(
+                    "No alternative registered account is available for switching."
+                )
+        except Exception as exc:
+            self._append_event(
+                occurred_at=occurred_at,
+                previous_active_index=previous_active_index,
+                account_index=None,
+                mode="auto-target",
+                result="failure",
+                message=str(exc),
+            )
+            raise
         return self._switch_account(candidates[0], mode="auto-target")
 
     def switch_to(self, index: int) -> SwitchResult:
@@ -110,7 +126,7 @@ class SwitchService:
         *,
         occurred_at: datetime,
         previous_active_index: int | None,
-        account_index: int,
+        account_index: int | None,
         mode: str,
         result: str,
         message: str | None,
