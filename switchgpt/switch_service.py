@@ -30,14 +30,31 @@ class SwitchService:
         return self._switch_account(candidates[0], mode="auto-target")
 
     def switch_to(self, index: int) -> SwitchResult:
-        account = self._account_store.get_record(index)
-        return self._switch_account(account, mode="explicit-target")
+        return self._switch_account(
+            account=None,
+            account_index=index,
+            mode="explicit-target",
+        )
 
-    def _switch_account(self, account, *, mode: str) -> SwitchResult:
-        previous_active_index = self._account_store.load().active_account_index
+    def _switch_account(
+        self,
+        account,
+        *,
+        mode: str,
+        account_index: int | None = None,
+    ) -> SwitchResult:
+        previous_active_index = None
         occurred_at = datetime.now(UTC)
         event_recorded = False
         try:
+            previous_active_index = self._account_store.load().active_account_index
+            if account is None:
+                if account_index is None:
+                    raise SwitchError("Switch target is required.")
+                account = self._account_store.get_record(account_index)
+            else:
+                account_index = account.index
+
             secret = self._secret_store.read(account.keychain_key)
             if secret is None:
                 raise SwitchError(
@@ -67,11 +84,11 @@ class SwitchService:
 
             self._account_store.save_runtime_state(account.index, occurred_at)
         except Exception as exc:
-            if not event_recorded:
+            if not event_recorded and account_index is not None:
                 self._append_event(
                     occurred_at=occurred_at,
                     previous_active_index=previous_active_index,
-                    account_index=account.index,
+                    account_index=account_index,
                     mode=mode,
                     result="failure",
                     message=str(exc),

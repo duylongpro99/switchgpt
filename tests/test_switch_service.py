@@ -11,7 +11,12 @@ from switchgpt.switch_service import SwitchService
 
 class FakeAccountStore:
     def __init__(
-        self, accounts, active_account_index=None, save_runtime_state_error: Exception | None = None
+        self,
+        accounts,
+        active_account_index=None,
+        save_runtime_state_error: Exception | None = None,
+        load_error: Exception | None = None,
+        get_record_error: Exception | None = None,
     ) -> None:
         self._snapshot = type(
             "Snapshot",
@@ -24,11 +29,17 @@ class FakeAccountStore:
         )()
         self.saved_runtime_state = None
         self._save_runtime_state_error = save_runtime_state_error
+        self._load_error = load_error
+        self._get_record_error = get_record_error
 
     def load(self):
+        if self._load_error is not None:
+            raise self._load_error
         return self._snapshot
 
     def get_record(self, index: int):
+        if self._get_record_error is not None:
+            raise self._get_record_error
         for account in self._snapshot.accounts:
             if account.index == index:
                 return account
@@ -191,3 +202,43 @@ def test_runtime_state_persistence_failure_records_failure_history() -> None:
     assert service._account_store.saved_runtime_state is None
     assert service._history_store.events[-1].result == "failure"
     assert service._history_store.events[-1].message == "metadata write failed"
+
+
+def test_explicit_target_lookup_failure_records_failure_history() -> None:
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com")],
+            active_account_index=0,
+            get_record_error=SwitchError("Account slot 1 is not registered."),
+        ),
+        secret_store=FakeSecretStore(None),
+        managed_browser=FakeManagedBrowser(authenticated=True),
+        history_store=FakeHistoryStore(),
+    )
+
+    with pytest.raises(SwitchError, match="Account slot 1 is not registered."):
+        service.switch_to(index=1)
+
+    assert service._history_store.events[-1].to_account_index == 1
+    assert service._history_store.events[-1].result == "failure"
+    assert service._history_store.events[-1].message == "Account slot 1 is not registered."
+
+
+def test_explicit_switch_metadata_load_failure_records_failure_history() -> None:
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+            load_error=RuntimeError("metadata load failed"),
+        ),
+        secret_store=FakeSecretStore(None),
+        managed_browser=FakeManagedBrowser(authenticated=True),
+        history_store=FakeHistoryStore(),
+    )
+
+    with pytest.raises(RuntimeError, match="metadata load failed"):
+        service.switch_to(index=1)
+
+    assert service._history_store.events[-1].to_account_index == 1
+    assert service._history_store.events[-1].result == "failure"
+    assert service._history_store.events[-1].message == "metadata load failed"
