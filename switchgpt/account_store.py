@@ -1,15 +1,10 @@
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
 from .errors import AccountStoreError
-from .models import AccountRecord, AccountState
-
-
-@dataclass(frozen=True)
-class AccountSnapshot:
-    accounts: list[AccountRecord]
+from .models import AccountRecord, AccountSnapshot, AccountState
 
 
 class AccountStore:
@@ -19,7 +14,9 @@ class AccountStore:
 
     def load(self) -> AccountSnapshot:
         if not self._metadata_path.exists():
-            return AccountSnapshot(accounts=[])
+            return AccountSnapshot(
+                accounts=[], active_account_index=None, last_switch_at=None
+            )
         try:
             raw_text = self._metadata_path.read_text()
         except OSError as exc:
@@ -34,7 +31,11 @@ class AccountStore:
             accounts = []
             for item in raw_accounts:
                 accounts.append(self._load_record(item))
-            return AccountSnapshot(accounts=accounts)
+            return AccountSnapshot(
+                accounts=accounts,
+                active_account_index=self._load_active_account_index(payload),
+                last_switch_at=self._load_last_switch_at(payload),
+            )
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise AccountStoreError("Malformed account metadata.") from exc
 
@@ -63,6 +64,19 @@ class AccountStore:
             status=AccountState(status_value),
             last_error=last_error,
         )
+
+    def _load_active_account_index(self, payload: dict[str, object]) -> int | None:
+        active_account_index = payload.get("active_account_index")
+        if active_account_index is None:
+            return None
+        return self._require_int(active_account_index)
+
+    def _load_last_switch_at(self, payload: dict[str, object]) -> datetime | None:
+        last_switch_at = payload.get("last_switch_at")
+        if last_switch_at is None:
+            return None
+        last_switch_at_text = self._require_str(last_switch_at)
+        return datetime.fromisoformat(last_switch_at_text)
 
     @staticmethod
     def _require_int(value: object) -> int:
@@ -94,8 +108,35 @@ class AccountStore:
         accounts = [
             account for account in snapshot.accounts if account.index != record.index
         ] + [record]
+        self._write_snapshot(
+            AccountSnapshot(
+                accounts=sorted(accounts, key=lambda item: item.index),
+                active_account_index=snapshot.active_account_index,
+                last_switch_at=snapshot.last_switch_at,
+            )
+        )
+
+    def save_runtime_state(
+        self, active_account_index: int | None, switched_at: datetime | None
+    ) -> None:
+        snapshot = self.load()
+        self._write_snapshot(
+            AccountSnapshot(
+                accounts=snapshot.accounts,
+                active_account_index=active_account_index,
+                last_switch_at=switched_at,
+            )
+        )
+
+    def _write_snapshot(self, snapshot: AccountSnapshot) -> None:
         payload = {
             "version": 1,
+            "active_account_index": snapshot.active_account_index,
+            "last_switch_at": (
+                snapshot.last_switch_at.isoformat()
+                if snapshot.last_switch_at is not None
+                else None
+            ),
             "accounts": [
                 {
                     **asdict(account),
@@ -104,7 +145,7 @@ class AccountStore:
                     "last_validated_at": account.last_validated_at.isoformat(),
                     "status": account.status.value,
                 }
-                for account in sorted(accounts, key=lambda item: item.index)
+                for account in snapshot.accounts
             ],
         }
         self._metadata_path.parent.mkdir(parents=True, exist_ok=True)

@@ -5,7 +5,40 @@ import pytest
 
 from switchgpt.account_store import AccountStore
 from switchgpt.errors import AccountStoreError
-from switchgpt.models import AccountRecord, AccountState
+from switchgpt.models import AccountRecord, AccountSnapshot, AccountState
+
+
+def test_load_returns_empty_snapshot_with_phase_2_top_level_fields(tmp_path) -> None:
+    store = AccountStore(tmp_path / "accounts.json", slot_count=3)
+
+    snapshot = store.load()
+
+    assert snapshot == AccountSnapshot(
+        accounts=[], active_account_index=None, last_switch_at=None
+    )
+
+
+def test_save_active_account_round_trips_with_registered_accounts(tmp_path) -> None:
+    store = AccountStore(tmp_path / "accounts.json", slot_count=3)
+    recorded_at = datetime(2026, 4, 16, 11, 15, tzinfo=UTC)
+    store.save_record(
+        AccountRecord(
+            index=0,
+            email="account1@example.com",
+            keychain_key="switchgpt_account_0",
+            registered_at=recorded_at,
+            last_reauth_at=recorded_at,
+            last_validated_at=recorded_at,
+            status=AccountState.REGISTERED,
+            last_error=None,
+        )
+    )
+
+    store.save_runtime_state(active_account_index=0, switched_at=recorded_at)
+    snapshot = store.load()
+
+    assert snapshot.active_account_index == 0
+    assert snapshot.last_switch_at == recorded_at
 
 
 def test_allocate_next_empty_slot_returns_zero_for_empty_store(tmp_path) -> None:

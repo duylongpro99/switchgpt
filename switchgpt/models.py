@@ -22,3 +22,8 @@ class AccountRecord:
     status: AccountState
     last_error: str | None
 
+@dataclass(frozen=True)
+class AccountSnapshot:
+    accounts: list[AccountRecord]
+    active_account_index: int | None
+    last_switch_at: datetime | None
