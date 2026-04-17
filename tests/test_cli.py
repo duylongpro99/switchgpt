@@ -248,6 +248,8 @@ def test_open_command_reports_managed_workspace_ready(monkeypatch) -> None:
 
 
 def test_watch_command_prints_notifications_and_exits_zero_for_short_run(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
     class FakeWatchService:
         def run(self, *, notify, sleep_fn=None, stop_after_cycles=None):
             notify(
@@ -277,6 +279,8 @@ def test_watch_command_prints_notifications_and_exits_zero_for_short_run(monkeyp
 
 
 def test_watch_command_exits_non_zero_on_exhaustion(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
     class FakeWatchService:
         def run(self, *, notify, sleep_fn=None, stop_after_cycles=None):
             notify(

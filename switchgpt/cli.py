@@ -44,21 +44,22 @@ def build_managed_browser() -> ManagedBrowser:
     )
 
 
-def build_switch_service() -> SwitchService:
+def _build_switch_components() -> tuple[AccountStore, KeychainSecretStore, ManagedBrowser, SwitchHistoryStore]:
     settings = Settings.from_env()
     store = AccountStore(settings.metadata_path, settings.slot_count)
     secret_store = KeychainSecretStore(settings.keychain_service)
     managed_browser = build_managed_browser()
     history_store = SwitchHistoryStore(settings.switch_history_path)
+    return store, secret_store, managed_browser, history_store
+
+
+def build_switch_service() -> SwitchService:
+    store, secret_store, managed_browser, history_store = _build_switch_components()
     return SwitchService(store, secret_store, managed_browser, history_store)
 
 
 def build_watch_service() -> WatchService:
-    settings = Settings.from_env()
-    store = AccountStore(settings.metadata_path, settings.slot_count)
-    secret_store = KeychainSecretStore(settings.keychain_service)
-    managed_browser = build_managed_browser()
-    history_store = SwitchHistoryStore(settings.switch_history_path)
+    store, secret_store, managed_browser, history_store = _build_switch_components()
     switch_service = SwitchService(store, secret_store, managed_browser, history_store)
     return WatchService(
         account_store=store,
