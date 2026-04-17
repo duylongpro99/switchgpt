@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from switchgpt.models import LimitState
 from switchgpt.managed_browser import ManagedBrowser
 from switchgpt.errors import ManagedBrowserError
@@ -65,18 +67,39 @@ class FakePage:
         return self.closed
 
 
-def test_detect_limit_state_returns_limit_detected_for_usage_cap_banner() -> None:
+@pytest.mark.parametrize(
+    ("page_text", "expected_state"),
+    [
+        ("You have reached the limit for GPT-5 messages.", LimitState.LIMIT_DETECTED),
+        ("Your usage limit has been reached. Try again later.", LimitState.LIMIT_DETECTED),
+        ("Please try again later after the current window resets.", LimitState.LIMIT_DETECTED),
+    ],
+)
+def test_detect_limit_state_returns_limit_detected_for_banner_variants(
+    page_text: str,
+    expected_state: LimitState,
+) -> None:
     browser = ManagedBrowser("https://chatgpt.com", profile_dir=None)
     page = FakePage()
-    page.text = "You have reached the limit for GPT-5 messages. Try again later."
+    page.text = page_text
 
-    assert browser.detect_limit_state(page) is LimitState.LIMIT_DETECTED
+    assert browser.detect_limit_state(page) is expected_state
 
 
-def test_detect_limit_state_returns_no_limit_detected_for_normal_workspace() -> None:
+@pytest.mark.parametrize(
+    "page_text",
+    [
+        "ChatGPT Open sidebar",
+        "Conversation history",
+        "Welcome back to ChatGPT",
+    ],
+)
+def test_detect_limit_state_returns_no_limit_detected_for_normal_workspace_variants(
+    page_text: str,
+) -> None:
     browser = ManagedBrowser("https://chatgpt.com", profile_dir=None)
     page = FakePage()
-    page.text = "ChatGPT Open sidebar"
+    page.text = page_text
 
     assert browser.detect_limit_state(page) is LimitState.NO_LIMIT_DETECTED
 

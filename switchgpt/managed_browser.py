@@ -6,6 +6,12 @@ from playwright.sync_api import sync_playwright
 from .errors import ManagedBrowserError
 from .models import LimitState
 
+LIMIT_DETECTION_MARKERS = (
+    "you have reached the limit",
+    "try again later",
+    "usage limit",
+)
+
 
 @dataclass
 class ManagedBrowser:
@@ -171,11 +177,6 @@ class ManagedBrowser:
         except Exception:
             return LimitState.UNKNOWN
 
-        limit_markers = (
-            "you have reached the limit",
-            "try again later",
-            "usage limit",
-        )
-        if any(marker in body for marker in limit_markers):
+        if any(marker in body for marker in LIMIT_DETECTION_MARKERS):
             return LimitState.LIMIT_DETECTED
         return LimitState.NO_LIMIT_DETECTED
