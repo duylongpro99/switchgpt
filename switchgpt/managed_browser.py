@@ -4,6 +4,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 from .errors import ManagedBrowserError
+from .models import LimitState
 
 
 @dataclass
@@ -163,3 +164,18 @@ class ManagedBrowser:
         if "sign in" in body or "log in" in body or "login" in body:
             return False
         return "chatgpt" in body or "open sidebar" in body
+
+    def detect_limit_state(self, page) -> LimitState:
+        try:
+            body = page.locator("body").inner_text().lower()
+        except Exception:
+            return LimitState.UNKNOWN
+
+        limit_markers = (
+            "you have reached the limit",
+            "try again later",
+            "usage limit",
+        )
+        if any(marker in body for marker in limit_markers):
+            return LimitState.LIMIT_DETECTED
+        return LimitState.NO_LIMIT_DETECTED

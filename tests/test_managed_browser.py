@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from switchgpt.models import LimitState
 from switchgpt.managed_browser import ManagedBrowser
 from switchgpt.errors import ManagedBrowserError
 
@@ -62,6 +63,32 @@ class FakePage:
 
     def is_closed(self) -> bool:
         return self.closed
+
+
+def test_detect_limit_state_returns_limit_detected_for_usage_cap_banner() -> None:
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=None)
+    page = FakePage()
+    page.text = "You have reached the limit for GPT-5 messages. Try again later."
+
+    assert browser.detect_limit_state(page) is LimitState.LIMIT_DETECTED
+
+
+def test_detect_limit_state_returns_no_limit_detected_for_normal_workspace() -> None:
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=None)
+    page = FakePage()
+    page.text = "ChatGPT Open sidebar"
+
+    assert browser.detect_limit_state(page) is LimitState.NO_LIMIT_DETECTED
+
+
+def test_detect_limit_state_returns_unknown_when_page_text_cannot_be_read() -> None:
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=None)
+
+    class BrokenPage(FakePage):
+        def inner_text(self) -> str:
+            raise RuntimeError("DOM unavailable")
+
+    assert browser.detect_limit_state(BrokenPage()) is LimitState.UNKNOWN
 
 
 class FakePlaywrightHandle:
