@@ -54,15 +54,6 @@ class WatchService:
                 "Automatic switching requires a known active account."
             )
 
-        try:
-            context, page = self._managed_browser.ensure_runtime()
-        except ManagedBrowserError:
-            return WatchRunResult(
-                "browser-runtime-failure",
-                1,
-                snapshot.active_account_index,
-            )
-        del context
         excluded_indexes: set[int] = set()
         active_index = snapshot.active_account_index
         cycles = 0
@@ -74,6 +65,8 @@ class WatchService:
 
         while True:
             try:
+                context, page = self._managed_browser.ensure_runtime()
+                del context
                 detection = self._managed_browser.detect_limit_state(page)
             except ManagedBrowserError:
                 return WatchRunResult("browser-runtime-failure", 1, active_index)

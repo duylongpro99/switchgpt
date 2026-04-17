@@ -27,16 +27,40 @@ class FakeManagedBrowser:
         self._detections = list(detections)
         self._calls = 0
         self._ensure_runtime_error = ensure_runtime_error
+        self.ensure_runtime_calls = 0
 
     def ensure_runtime(self):
         if self._ensure_runtime_error is not None:
             raise self._ensure_runtime_error
+        self.ensure_runtime_calls += 1
         return "context", "page"
 
     def detect_limit_state(self, page):
         detection = self._detections[min(self._calls, len(self._detections) - 1)]
         self._calls += 1
         return detection
+
+
+class FakeRotatingManagedBrowser:
+    def __init__(self, page_detections) -> None:
+        self._page_detections = list(page_detections)
+        self._ensure_runtime_calls = 0
+        self.detect_calls = []
+
+    def ensure_runtime(self):
+        page_number = min(self._ensure_runtime_calls, len(self._page_detections) - 1)
+        page = f"page-{page_number}"
+        self._ensure_runtime_calls += 1
+        return "context", page
+
+    @property
+    def ensure_runtime_calls(self) -> int:
+        return self._ensure_runtime_calls
+
+    def detect_limit_state(self, page):
+        self.detect_calls.append(page)
+        page_index = int(page.rsplit("-", 1)[1])
+        return self._page_detections[page_index]
 
 
 class FakeSwitchResult:
@@ -109,6 +133,39 @@ def test_run_switches_immediately_when_limit_is_detected() -> None:
     assert switch_service.calls == [(1, "watch-auto")]
     assert result.reason == "cycle-limit"
     assert any(event.kind == "limit-detected" for event in notifications)
+    assert any(event.kind == "switch-succeeded" for event in notifications)
+
+
+def test_run_refreshes_runtime_on_each_cycle_before_detection() -> None:
+    notifications = []
+    managed_browser = FakeRotatingManagedBrowser(
+        page_detections=[
+            LimitState.NO_LIMIT_DETECTED,
+            LimitState.LIMIT_DETECTED,
+        ]
+    )
+    switch_service = FakeSwitchService()
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        managed_browser=managed_browser,
+        switch_service=switch_service,
+        history_store=FakeHistoryStore(),
+        poll_interval_seconds=0.0,
+    )
+
+    result = service.run(
+        notify=notifications.append,
+        sleep_fn=lambda _: None,
+        stop_after_cycles=2,
+    )
+
+    assert result.reason == "cycle-limit"
+    assert managed_browser.ensure_runtime_calls == 2
+    assert managed_browser.detect_calls == ["page-0", "page-1"]
+    assert switch_service.calls == [(1, "watch-auto")]
     assert any(event.kind == "switch-succeeded" for event in notifications)
 
 
