@@ -23,10 +23,16 @@ class FakeAccountStore:
 
 
 class FakeManagedBrowser:
-    def __init__(self, detections, ensure_runtime_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        detections,
+        ensure_runtime_error: Exception | None = None,
+        detect_limit_state_error: Exception | None = None,
+    ) -> None:
         self._detections = list(detections)
         self._calls = 0
         self._ensure_runtime_error = ensure_runtime_error
+        self._detect_limit_state_error = detect_limit_state_error
         self.ensure_runtime_calls = 0
 
     def ensure_runtime(self):
@@ -36,6 +42,8 @@ class FakeManagedBrowser:
         return "context", "page"
 
     def detect_limit_state(self, page):
+        if self._detect_limit_state_error is not None:
+            raise self._detect_limit_state_error
         detection = self._detections[min(self._calls, len(self._detections) - 1)]
         self._calls += 1
         return detection
@@ -262,6 +270,33 @@ def test_run_returns_user_interrupted_when_sleep_is_interrupted() -> None:
     assert history_store.events[-1].result == "user-interrupted"
 
 
+def test_run_returns_user_interrupted_when_runtime_poll_is_interrupted() -> None:
+    history_store = FakeHistoryStore()
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        managed_browser=FakeManagedBrowser(
+            detections=[LimitState.NO_LIMIT_DETECTED],
+            detect_limit_state_error=KeyboardInterrupt(),
+        ),
+        switch_service=FakeSwitchService(),
+        history_store=history_store,
+        poll_interval_seconds=1.0,
+    )
+
+    result = service.run(
+        notify=None,
+        sleep_fn=lambda _: None,
+        stop_after_cycles=None,
+    )
+
+    assert result.reason == "user-interrupted"
+    assert result.exit_code == 130
+    assert history_store.events[-1].result == "user-interrupted"
+
+
 def test_run_requires_active_index_to_match_registered_account() -> None:
     service = WatchService(
         account_store=FakeAccountStore(
@@ -283,6 +318,8 @@ def test_run_requires_active_index_to_match_registered_account() -> None:
 
 
 def test_run_returns_browser_runtime_failure_when_initial_runtime_setup_fails() -> None:
+    notifications = []
+    history_store = FakeHistoryStore()
     service = WatchService(
         account_store=FakeAccountStore(
             [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
@@ -293,12 +330,18 @@ def test_run_returns_browser_runtime_failure_when_initial_runtime_setup_fails() 
             ensure_runtime_error=ManagedBrowserError("runtime unavailable"),
         ),
         switch_service=FakeSwitchService(),
-        history_store=FakeHistoryStore(),
+        history_store=history_store,
         poll_interval_seconds=0.0,
     )
 
-    result = service.run(notify=None, sleep_fn=lambda _: None, stop_after_cycles=1)
+    result = service.run(
+        notify=notifications.append,
+        sleep_fn=lambda _: None,
+        stop_after_cycles=1,
+    )
 
     assert result.reason == "browser-runtime-failure"
     assert result.exit_code == 1
     assert result.active_account_index == 0
+    assert notifications[-1].kind == "browser-runtime-failure"
+    assert history_store.events[-1].result == "browser-runtime-failure"

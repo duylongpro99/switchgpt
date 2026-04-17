@@ -69,7 +69,9 @@ class WatchService:
                 del context
                 detection = self._managed_browser.detect_limit_state(page)
             except ManagedBrowserError:
-                return WatchRunResult("browser-runtime-failure", 1, active_index)
+                return self._finish_browser_runtime_failure(notify, active_index)
+            except KeyboardInterrupt:
+                return self._finish_user_interrupted(notify, active_index)
 
             if detection is LimitState.LIMIT_DETECTED:
                 self._emit(
@@ -125,20 +127,40 @@ class WatchService:
             try:
                 sleep_fn(self._poll_interval_seconds)
             except KeyboardInterrupt:
-                message = "Stopped watching for usage limits."
-                self._emit(notify, "user-interrupted", message)
-                self._history_store.append(
-                    SwitchEvent(
-                        occurred_at=datetime.now(UTC),
-                        from_account_index=active_index,
-                        to_account_index=None,
-                        mode="watch-auto",
-                        result="user-interrupted",
-                        message=message,
-                    )
-                )
-                return WatchRunResult("user-interrupted", 130, active_index)
+                return self._finish_user_interrupted(notify, active_index)
 
     def _emit(self, notify, kind: str, message: str) -> None:
         if notify is not None:
             notify(WatchNotification(kind=kind, message=message))
+
+    def _finish_browser_runtime_failure(
+        self, notify, active_index: int | None
+    ) -> WatchRunResult:
+        message = "Managed ChatGPT workspace became unavailable during watch."
+        self._emit(notify, "browser-runtime-failure", message)
+        self._history_store.append(
+            SwitchEvent(
+                occurred_at=datetime.now(UTC),
+                from_account_index=active_index,
+                to_account_index=None,
+                mode="watch-auto",
+                result="browser-runtime-failure",
+                message=message,
+            )
+        )
+        return WatchRunResult("browser-runtime-failure", 1, active_index)
+
+    def _finish_user_interrupted(self, notify, active_index: int | None) -> WatchRunResult:
+        message = "Stopped watching for usage limits."
+        self._emit(notify, "user-interrupted", message)
+        self._history_store.append(
+            SwitchEvent(
+                occurred_at=datetime.now(UTC),
+                from_account_index=active_index,
+                to_account_index=None,
+                mode="watch-auto",
+                result="user-interrupted",
+                message=message,
+            )
+        )
+        return WatchRunResult("user-interrupted", 130, active_index)

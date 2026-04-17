@@ -300,3 +300,27 @@ def test_watch_command_exits_non_zero_on_exhaustion(monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert "No eligible registered account remains for automatic switching." in result.stdout
+
+
+def test_watch_command_prints_runtime_failure_message_before_exit(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
+    class FakeWatchService:
+        def run(self, *, notify, sleep_fn=None, stop_after_cycles=None):
+            notify(
+                type(
+                    "Event",
+                    (),
+                    {
+                        "message": "Managed ChatGPT workspace became unavailable during watch."
+                    },
+                )()
+            )
+            return type("Result", (), {"exit_code": 1})()
+
+    monkeypatch.setattr("switchgpt.cli.build_watch_service", lambda: FakeWatchService())
+
+    result = runner.invoke(app, ["watch"])
+
+    assert result.exit_code == 1
+    assert "Managed ChatGPT workspace became unavailable during watch." in result.stdout
