@@ -124,6 +124,26 @@ def test_switch_to_explicit_account_updates_active_state_and_history() -> None:
     assert service._history_store.events[-1].result == "success"
 
 
+def test_switch_to_records_watch_auto_mode_for_automation_success() -> None:
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        secret_store=FakeSecretStore(
+            SessionSecret(session_token="session-2", csrf_token="csrf-2")
+        ),
+        managed_browser=FakeManagedBrowser(authenticated=True),
+        history_store=FakeHistoryStore(),
+    )
+
+    result = service.switch_to(index=1, mode="watch-auto")
+
+    assert result.mode == "watch-auto"
+    assert service._history_store.events[-1].mode == "watch-auto"
+    assert service._history_store.events[-1].result == "switch-succeeded"
+
+
 def test_switch_next_uses_first_registered_account_not_current() -> None:
     service = SwitchService(
         account_store=FakeAccountStore(
@@ -143,6 +163,23 @@ def test_switch_next_uses_first_registered_account_not_current() -> None:
     assert result.mode == "auto-target"
 
 
+def test_missing_secret_records_bounded_missing_secret_result() -> None:
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        secret_store=FakeSecretStore(None),
+        managed_browser=FakeManagedBrowser(authenticated=True),
+        history_store=FakeHistoryStore(),
+    )
+
+    with pytest.raises(SwitchError, match="Stored session secret is missing"):
+        service.switch_to(index=1, mode="watch-auto")
+
+    assert service._history_store.events[-1].result == "missing-secret"
+
+
 def test_failed_auth_verification_does_not_update_active_account() -> None:
     service = SwitchService(
         account_store=FakeAccountStore(
@@ -160,7 +197,26 @@ def test_failed_auth_verification_does_not_update_active_account() -> None:
         service.switch_to(index=1)
 
     assert service._account_store.saved_runtime_state is None
-    assert service._history_store.events[-1].result == "needs-reauth"
+    assert service._history_store.events[-1].result == "post-switch-auth-failed"
+
+
+def test_failed_auth_verification_records_post_switch_auth_failed() -> None:
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        secret_store=FakeSecretStore(
+            SessionSecret(session_token="session-2", csrf_token=None)
+        ),
+        managed_browser=FakeManagedBrowser(authenticated=False),
+        history_store=FakeHistoryStore(),
+    )
+
+    with pytest.raises(SwitchError, match="likely needs reauthentication"):
+        service.switch_to(index=1, mode="watch-auto")
+
+    assert service._history_store.events[-1].result == "post-switch-auth-failed"
 
 
 def test_missing_secret_records_failure_history_before_raising() -> None:
@@ -178,7 +234,7 @@ def test_missing_secret_records_failure_history_before_raising() -> None:
         service.switch_to(index=1)
 
     assert service._account_store.saved_runtime_state is None
-    assert service._history_store.events[-1].result == "failure"
+    assert service._history_store.events[-1].result == "missing-secret"
     assert "Stored session secret is missing" in service._history_store.events[-1].message
 
 
