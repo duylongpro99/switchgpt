@@ -163,6 +163,26 @@ def test_switch_next_uses_first_registered_account_not_current() -> None:
     assert result.mode == "auto-target"
 
 
+def test_switch_next_records_watch_auto_mode_for_automation_success() -> None:
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        secret_store=FakeSecretStore(
+            SessionSecret(session_token="session-2", csrf_token=None)
+        ),
+        managed_browser=FakeManagedBrowser(authenticated=True),
+        history_store=FakeHistoryStore(),
+    )
+
+    result = service.switch_next(mode="watch-auto")
+
+    assert result.mode == "watch-auto"
+    assert service._history_store.events[-1].mode == "watch-auto"
+    assert service._history_store.events[-1].result == "switch-succeeded"
+
+
 def test_missing_secret_records_bounded_missing_secret_result() -> None:
     service = SwitchService(
         account_store=FakeAccountStore(

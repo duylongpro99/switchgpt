@@ -39,7 +39,7 @@ class SwitchService:
                 previous_active_index=previous_active_index,
                 account_index=None,
                 mode=mode,
-                result=self._result_for_failure(exc),
+                result="failure",
                 message=str(exc),
             )
             raise
@@ -62,6 +62,7 @@ class SwitchService:
         previous_active_index = None
         occurred_at = datetime.now(UTC)
         event_recorded = False
+        failure_result = "failure"
         try:
             previous_active_index = self._account_store.load().active_account_index
             if account is None:
@@ -73,6 +74,7 @@ class SwitchService:
 
             secret = self._secret_store.read(account.keychain_key)
             if secret is None:
+                failure_result = "missing-secret"
                 raise SwitchError(
                     f"Stored session secret is missing for slot {account.index}."
                 )
@@ -90,11 +92,7 @@ class SwitchService:
                     previous_active_index=previous_active_index,
                     account_index=account.index,
                     mode=mode,
-                    result=self._result_for_failure(
-                        SwitchError(
-                            f"Account slot {account.index} likely needs reauthentication."
-                        )
-                    ),
+                    result="post-switch-auth-failed",
                     message=f"Authenticated state verification failed for slot {account.index}.",
                 )
                 event_recorded = True
@@ -110,7 +108,7 @@ class SwitchService:
                     previous_active_index=previous_active_index,
                     account_index=account_index,
                     mode=mode,
-                    result=self._result_for_failure(exc),
+                    result=failure_result,
                     message=str(exc),
                 )
             raise
@@ -124,14 +122,6 @@ class SwitchService:
             message=None,
         )
         return SwitchResult(account=account, mode=mode)
-
-    def _result_for_failure(self, exc: Exception) -> str:
-        message = str(exc).lower()
-        if "stored session secret is missing" in message:
-            return "missing-secret"
-        if "likely needs reauthentication" in message:
-            return "post-switch-auth-failed"
-        return "failure"
 
     def _success_result_for_mode(self, mode: str) -> str:
         return "switch-succeeded" if mode == "watch-auto" else "success"
