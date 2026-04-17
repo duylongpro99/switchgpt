@@ -1,12 +1,17 @@
 from pathlib import Path
 
 from switchgpt.managed_browser import ManagedBrowser
+from switchgpt.errors import ManagedBrowserError
 
 
 class FakeContext:
-    def __init__(self) -> None:
+    def __init__(self, pages=None, *, closed: bool = False, fail_pages: bool = False, fail_new_page: bool = False) -> None:
         self.cookies_cleared = False
         self.cookies_added = []
+        self._pages = list(pages or [])
+        self.closed = closed
+        self.fail_pages = fail_pages
+        self.fail_new_page = fail_new_page
 
     def clear_cookies(self) -> None:
         self.cookies_cleared = True
@@ -14,14 +19,33 @@ class FakeContext:
     def add_cookies(self, cookies) -> None:
         self.cookies_added.extend(cookies)
 
+    def is_closed(self) -> bool:
+        return self.closed
+
+    @property
+    def pages(self):
+        if self.fail_pages:
+            raise RuntimeError("stale context")
+        return self._pages
+
+    def new_page(self):
+        if self.fail_new_page:
+            raise RuntimeError("unable to create page")
+        page = FakePage()
+        self._pages.append(page)
+        return page
+
 
 class FakePage:
-    def __init__(self) -> None:
+    def __init__(self, *, closed: bool = False) -> None:
         self.url = "https://chatgpt.com"
         self.visited = []
         self.text = "ChatGPT"
+        self.closed = closed
 
     def goto(self, url: str) -> None:
+        if self.closed:
+            raise RuntimeError("page closed")
         self.visited.append(url)
         self.url = url
 
@@ -31,6 +55,34 @@ class FakePage:
 
     def inner_text(self) -> str:
         return self.text
+
+    def is_closed(self) -> bool:
+        return self.closed
+
+
+class FakePlaywrightHandle:
+    def __init__(self, context) -> None:
+        self.chromium = self
+        self.context = context
+        self.stopped = False
+        self.launches = []
+
+    def launch_persistent_context(self, profile_dir: str, headless: bool):
+        self.launches.append((profile_dir, headless))
+        return self.context
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class FakePlaywrightFactory:
+    def __init__(self, handle) -> None:
+        self.handle = handle
+        self.started = 0
+
+    def start(self):
+        self.started += 1
+        return self.handle
 
 
 def test_prepare_switch_clears_and_injects_cookies() -> None:
@@ -107,3 +159,116 @@ def test_open_workspace_creates_profile_dir_and_returns_runtime_handles(tmp_path
     assert launched["goto"] == "https://chatgpt.com"
     assert context is not None
     assert page is not None
+
+
+def test_open_workspace_recovers_from_closed_cached_page(tmp_path, monkeypatch) -> None:
+    live_page = FakePage()
+    closed_page = FakePage(closed=True)
+    context = FakeContext(pages=[closed_page, live_page])
+    playwright = FakePlaywrightHandle(context)
+    factory = FakePlaywrightFactory(playwright)
+
+    monkeypatch.setattr("switchgpt.managed_browser.sync_playwright", lambda: factory)
+
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=tmp_path / "profile")
+    browser._playwright = playwright
+    browser._context = context
+    browser._page = closed_page
+
+    returned_context, returned_page = browser.ensure_runtime()
+
+    assert returned_context is context
+    assert returned_page is live_page
+    assert live_page.visited[-1] == "https://chatgpt.com"
+    assert closed_page.visited == []
+    assert factory.started == 0
+    assert playwright.stopped is False
+
+
+def test_open_workspace_relaunches_stale_context(tmp_path, monkeypatch) -> None:
+    stale_page = FakePage(closed=True)
+    stale_context = FakeContext(pages=[stale_page], closed=True)
+    old_playwright = FakePlaywrightHandle(stale_context)
+
+    fresh_page = FakePage()
+    fresh_context = FakeContext(pages=[fresh_page])
+    fresh_playwright = FakePlaywrightHandle(fresh_context)
+    factory = FakePlaywrightFactory(fresh_playwright)
+
+    monkeypatch.setattr("switchgpt.managed_browser.sync_playwright", lambda: factory)
+
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=tmp_path / "profile")
+    browser._playwright = old_playwright
+    browser._context = stale_context
+    browser._page = stale_page
+
+    returned_context, returned_page = browser.ensure_runtime()
+
+    assert returned_context is fresh_context
+    assert returned_page is fresh_page
+    assert fresh_page.visited[-1] == "https://chatgpt.com"
+    assert old_playwright.stopped is True
+    assert factory.started == 1
+
+
+def test_open_workspace_relaunches_when_cached_context_is_broken(tmp_path, monkeypatch) -> None:
+    cached_page = FakePage()
+    stale_context = FakeContext(pages=[cached_page], fail_pages=True)
+    old_playwright = FakePlaywrightHandle(stale_context)
+
+    fresh_page = FakePage()
+    fresh_context = FakeContext(pages=[fresh_page])
+    fresh_playwright = FakePlaywrightHandle(fresh_context)
+    factory = FakePlaywrightFactory(fresh_playwright)
+
+    monkeypatch.setattr("switchgpt.managed_browser.sync_playwright", lambda: factory)
+
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=tmp_path / "profile")
+    browser._playwright = old_playwright
+    browser._context = stale_context
+    browser._page = cached_page
+
+    returned_context, returned_page = browser.ensure_runtime()
+
+    assert returned_context is fresh_context
+    assert returned_page is fresh_page
+    assert cached_page.visited == []
+    assert fresh_page.visited[-1] == "https://chatgpt.com"
+    assert old_playwright.stopped is True
+    assert factory.started == 1
+
+
+def test_open_workspace_stops_new_playwright_when_launch_fails(tmp_path, monkeypatch) -> None:
+    class FailingChromium:
+        def launch_persistent_context(self, profile_dir: str, headless: bool):
+            raise RuntimeError("launch failed")
+
+    class FailingPlaywrightHandle:
+        def __init__(self) -> None:
+            self.chromium = FailingChromium()
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    failing_handle = FailingPlaywrightHandle()
+
+    class FailingFactory:
+        def start(self):
+            return failing_handle
+
+    monkeypatch.setattr("switchgpt.managed_browser.sync_playwright", lambda: FailingFactory())
+
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=tmp_path / "profile")
+
+    try:
+        browser.ensure_runtime()
+    except ManagedBrowserError as exc:
+        assert "Unable to launch the managed ChatGPT browser workspace." in str(exc)
+    else:
+        raise AssertionError("expected ManagedBrowserError")
+
+    assert failing_handle.stopped is True
+    assert browser._playwright is None
+    assert browser._context is None
+    assert browser._page is None

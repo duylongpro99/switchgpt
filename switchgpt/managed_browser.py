@@ -19,25 +19,110 @@ class ManagedBrowser:
             raise ManagedBrowserError("Unable to launch the managed ChatGPT browser workspace.")
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        if self._context is None:
-            self._playwright = sync_playwright().start()
+        context = self._context
+        page = self._page
+
+        if not self._is_live_context(context):
+            context = self._launch_runtime(replace_existing=True)
+            page = None
+
+        try:
+            page = self._resolve_live_page(context, page)
+            page.goto(self.base_url)
+        except Exception:
             try:
-                self._context = self._playwright.chromium.launch_persistent_context(
-                    str(self.profile_dir),
-                    headless=False,
-                )
+                context = self._launch_runtime(replace_existing=True)
+                page = self._resolve_live_page(context, None)
+                page.goto(self.base_url)
             except Exception as exc:
+                self._discard_runtime()
                 raise ManagedBrowserError("Unable to launch the managed ChatGPT browser workspace.") from exc
 
-        if self._page is None:
-            pages = list(self._context.pages)
-            self._page = pages[0] if pages else self._context.new_page()
-
-        self._page.goto(self.base_url)
-        return self._context, self._page
+        self._context = context
+        self._page = page
+        return context, page
 
     def ensure_runtime(self):
         return self.open_workspace()
+
+    def _launch_runtime(self, *, replace_existing: bool = False):
+        if replace_existing:
+            self._discard_runtime(stop_playwright=True)
+        self._playwright = sync_playwright().start()
+        try:
+            context = self._playwright.chromium.launch_persistent_context(
+                str(self.profile_dir),
+                headless=False,
+            )
+        except Exception as exc:
+            self._stop_playwright(self._playwright)
+            self._playwright = None
+            self._context = None
+            self._page = None
+            raise ManagedBrowserError("Unable to launch the managed ChatGPT browser workspace.") from exc
+        self._context = context
+        self._page = None
+        return context
+
+    def _resolve_live_page(self, context, page):
+        if self._is_live_page(page):
+            return page
+
+        try:
+            pages = list(context.pages)
+        except Exception:
+            pages = []
+
+        for candidate in pages:
+            if self._is_live_page(candidate):
+                return candidate
+
+        try:
+            return context.new_page()
+        except Exception as exc:
+            raise ManagedBrowserError("Unable to launch the managed ChatGPT browser workspace.") from exc
+
+    def _is_live_context(self, context) -> bool:
+        if context is None:
+            return False
+        if self._read_closed_state(context):
+            return False
+        try:
+            list(context.pages)
+        except Exception:
+            return False
+        return True
+
+    def _is_live_page(self, page) -> bool:
+        if page is None:
+            return False
+        return not self._read_closed_state(page)
+
+    def _read_closed_state(self, handle) -> bool:
+        probe = getattr(handle, "is_closed", None)
+        if probe is None:
+            return False
+        try:
+            return probe() if callable(probe) else bool(probe)
+        except Exception:
+            return True
+
+    def _discard_runtime(self, *, stop_playwright: bool = False) -> None:
+        if stop_playwright:
+            self._stop_playwright(self._playwright)
+            self._playwright = None
+        self._context = None
+        self._page = None
+
+    def _stop_playwright(self, playwright) -> None:
+        if playwright is None:
+            return
+        stopper = getattr(playwright, "stop", None)
+        if callable(stopper):
+            try:
+                stopper()
+            except Exception:
+                pass
 
     def prepare_switch(
         self,
