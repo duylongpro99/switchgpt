@@ -101,6 +101,7 @@ def test_open_workspace_creates_profile_dir_and_returns_runtime_handles(tmp_path
     browser = ManagedBrowser("https://chatgpt.com", profile_dir=tmp_path / "profile")
     context, page = browser.open_workspace()
 
+    assert (tmp_path / "profile").exists()
     assert Path(launched["profile_dir"]) == tmp_path / "profile"
     assert launched["headless"] is False
     assert launched["goto"] == "https://chatgpt.com"
