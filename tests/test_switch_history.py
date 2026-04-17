@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import json
 
 from switchgpt.switch_history import SwitchEvent, SwitchHistoryStore
 
@@ -56,3 +57,57 @@ def test_append_serializes_null_target_slot(tmp_path) -> None:
 
     lines = (tmp_path / "switch-history.jsonl").read_text().splitlines()
     assert '"to_account_index": null' in lines[0]
+
+
+def test_load_reads_switch_events_from_jsonl(tmp_path) -> None:
+    history_path = tmp_path / "switch-history.jsonl"
+    history_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "occurred_at": "2026-04-16T11:15:00+00:00",
+                        "from_account_index": 0,
+                        "to_account_index": 1,
+                        "mode": "explicit-target",
+                        "result": "success",
+                        "message": None,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "occurred_at": "2026-04-16T11:20:00+00:00",
+                        "from_account_index": 1,
+                        "to_account_index": 0,
+                        "mode": "auto-target",
+                        "result": "failure",
+                        "message": "metadata load failed",
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    store = SwitchHistoryStore(history_path)
+
+    events = store.load()
+
+    assert events == [
+        SwitchEvent(
+            occurred_at=datetime(2026, 4, 16, 11, 15, tzinfo=UTC),
+            from_account_index=0,
+            to_account_index=1,
+            mode="explicit-target",
+            result="success",
+            message=None,
+        ),
+        SwitchEvent(
+            occurred_at=datetime(2026, 4, 16, 11, 20, tzinfo=UTC),
+            from_account_index=1,
+            to_account_index=0,
+            mode="auto-target",
+            result="failure",
+            message="metadata load failed",
+        ),
+    ]

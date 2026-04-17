@@ -2,6 +2,7 @@ from typer.testing import CliRunner
 
 from switchgpt.account_store import AccountStore
 from switchgpt.cli import app
+from switchgpt.errors import SwitchError
 from switchgpt.models import AccountRecord, AccountState
 from switchgpt.registration import RegistrationService
 
@@ -179,24 +180,37 @@ def test_add_command_reports_slot_exhaustion_cleanly(monkeypatch, tmp_path) -> N
 
 def test_switch_command_reports_selected_account(monkeypatch) -> None:
     class FakeService:
-        def switch_next(self):
-            class Result:
-                mode = "auto-target"
-
-                class Account:
-                    index = 1
-                    email = "account2@example.com"
-
-                account = Account()
-
-            return Result()
+        def switch_to(self, index: int):
+            account = type(
+                "Account",
+                (),
+                {
+                    "index": index,
+                    "email": "account2@example.com" if index == 1 else "account1@example.com",
+                },
+            )()
+            return type("Result", (), {"mode": "explicit-target", "account": account})()
 
     monkeypatch.setattr("switchgpt.cli.build_switch_service", lambda: FakeService())
 
-    result = runner.invoke(app, ["switch"])
+    result = runner.invoke(app, ["switch", "--to", "1"])
 
     assert result.exit_code == 0
     assert "Switched to account2@example.com in slot 1." in result.stdout
+
+
+def test_switch_command_surfaces_switch_error_cleanly(monkeypatch) -> None:
+    class FakeService:
+        def switch_to(self, index: int):
+            raise SwitchError(f"Account slot {index} is not registered.")
+
+    monkeypatch.setattr("switchgpt.cli.build_switch_service", lambda: FakeService())
+
+    result = runner.invoke(app, ["switch", "--to", "2"])
+
+    assert result.exit_code == 1
+    assert "Account slot 2 is not registered." in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_open_command_reports_managed_workspace_ready(monkeypatch) -> None:

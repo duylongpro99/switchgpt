@@ -99,8 +99,14 @@ def test_prepare_switch_clears_and_injects_cookies() -> None:
 
     assert context.cookies_cleared is True
     assert len(context.cookies_added) == 2
-    assert context.cookies_added[0]["name"] == "__Secure-next-auth.session-token"
-    assert context.cookies_added[1]["name"] == "__Host-next-auth.csrf-token"
+    session_cookie = context.cookies_added[0]
+    csrf_cookie = context.cookies_added[1]
+    assert session_cookie["name"] == "__Secure-next-auth.session-token"
+    assert session_cookie["secure"] is True
+    assert session_cookie["domain"] == ".chatgpt.com"
+    assert csrf_cookie["name"] == "__Host-next-auth.csrf-token"
+    assert csrf_cookie["secure"] is True
+    assert "domain" not in csrf_cookie
     assert page.visited[-1] == "https://chatgpt.com"
 
 

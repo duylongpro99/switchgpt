@@ -139,6 +139,7 @@ class ManagedBrowser:
                 "value": session_token,
                 "domain": ".chatgpt.com",
                 "path": "/",
+                "secure": True,
             }
         ]
         if csrf_token is not None:
@@ -146,8 +147,8 @@ class ManagedBrowser:
                 {
                     "name": "__Host-next-auth.csrf-token",
                     "value": csrf_token,
-                    "domain": "chatgpt.com",
                     "path": "/",
+                    "secure": True,
                 }
             )
         context.add_cookies(cookies)
