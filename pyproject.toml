@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "switchgpt"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "typer>=0.16.0",
+  "playwright>=1.52.0",
+  "keyring>=25.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+]
+
+[project.scripts]
+switchgpt = "switchgpt.cli:main"
+
+[tool.setuptools]
+packages = ["switchgpt"]
