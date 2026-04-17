@@ -18,7 +18,7 @@ class SwitchService:
         self._managed_browser = managed_browser
         self._history_store = history_store
 
-    def switch_next(self) -> SwitchResult:
+    def switch_next(self, *, mode: str = "auto-target") -> SwitchResult:
         occurred_at = datetime.now(UTC)
         previous_active_index = None
         try:
@@ -38,18 +38,18 @@ class SwitchService:
                 occurred_at=occurred_at,
                 previous_active_index=previous_active_index,
                 account_index=None,
-                mode="auto-target",
+                mode=mode,
                 result="failure",
                 message=str(exc),
             )
             raise
-        return self._switch_account(candidates[0], mode="auto-target")
+        return self._switch_account(candidates[0], mode=mode)
 
-    def switch_to(self, index: int) -> SwitchResult:
+    def switch_to(self, index: int, *, mode: str = "explicit-target") -> SwitchResult:
         return self._switch_account(
             account=None,
             account_index=index,
-            mode="explicit-target",
+            mode=mode,
         )
 
     def _switch_account(
@@ -62,6 +62,7 @@ class SwitchService:
         previous_active_index = None
         occurred_at = datetime.now(UTC)
         event_recorded = False
+        failure_result = "failure"
         try:
             previous_active_index = self._account_store.load().active_account_index
             if account is None:
@@ -73,6 +74,7 @@ class SwitchService:
 
             secret = self._secret_store.read(account.keychain_key)
             if secret is None:
+                failure_result = "missing-secret"
                 raise SwitchError(
                     f"Stored session secret is missing for slot {account.index}."
                 )
@@ -90,7 +92,7 @@ class SwitchService:
                     previous_active_index=previous_active_index,
                     account_index=account.index,
                     mode=mode,
-                    result="needs-reauth",
+                    result="post-switch-auth-failed",
                     message=f"Authenticated state verification failed for slot {account.index}.",
                 )
                 event_recorded = True
@@ -106,7 +108,7 @@ class SwitchService:
                     previous_active_index=previous_active_index,
                     account_index=account_index,
                     mode=mode,
-                    result="failure",
+                    result=failure_result,
                     message=str(exc),
                 )
             raise
@@ -116,10 +118,13 @@ class SwitchService:
             previous_active_index=previous_active_index,
             account_index=account.index,
             mode=mode,
-            result="success",
+            result=self._success_result_for_mode(mode),
             message=None,
         )
         return SwitchResult(account=account, mode=mode)
+
+    def _success_result_for_mode(self, mode: str) -> str:
+        return "switch-succeeded" if mode == "watch-auto" else "success"
 
     def _append_event(
         self,

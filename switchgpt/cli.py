@@ -10,6 +10,7 @@ from .secret_store import KeychainSecretStore
 from .status_service import StatusService
 from .switch_history import SwitchHistoryStore
 from .switch_service import SwitchService
+from .watch_service import WatchService
 
 
 app = typer.Typer(no_args_is_help=True)
@@ -43,13 +44,29 @@ def build_managed_browser() -> ManagedBrowser:
     )
 
 
-def build_switch_service() -> SwitchService:
+def _build_switch_components() -> tuple[AccountStore, KeychainSecretStore, ManagedBrowser, SwitchHistoryStore]:
     settings = Settings.from_env()
     store = AccountStore(settings.metadata_path, settings.slot_count)
     secret_store = KeychainSecretStore(settings.keychain_service)
     managed_browser = build_managed_browser()
     history_store = SwitchHistoryStore(settings.switch_history_path)
+    return store, secret_store, managed_browser, history_store
+
+
+def build_switch_service() -> SwitchService:
+    store, secret_store, managed_browser, history_store = _build_switch_components()
     return SwitchService(store, secret_store, managed_browser, history_store)
+
+
+def build_watch_service() -> WatchService:
+    store, secret_store, managed_browser, history_store = _build_switch_components()
+    switch_service = SwitchService(store, secret_store, managed_browser, history_store)
+    return WatchService(
+        account_store=store,
+        managed_browser=managed_browser,
+        switch_service=switch_service,
+        history_store=history_store,
+    )
 
 @app.command()
 def status() -> None:
@@ -105,6 +122,24 @@ def switch(to: int | None = typer.Option(None, "--to")) -> None:
     except SwitchGptError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def watch() -> None:
+    try:
+        ensure_supported_platform()
+        service = build_watch_service()
+
+        def print_event(event) -> None:
+            print(event.message)
+
+        result = service.run(notify=print_event)
+        if result.exit_code != 0:
+            raise typer.Exit(code=result.exit_code)
+    except SwitchGptError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
 
 def main() -> None:
     app()

@@ -116,6 +116,37 @@ def test_load_reads_switch_events_from_jsonl(tmp_path) -> None:
     ]
 
 
+def test_load_reads_watch_auto_events_from_jsonl(tmp_path) -> None:
+    history_path = tmp_path / "switch-history.jsonl"
+    history_path.write_text(
+        json.dumps(
+            {
+                "occurred_at": "2026-04-17T11:15:00+00:00",
+                "from_account_index": 0,
+                "to_account_index": 1,
+                "mode": "watch-auto",
+                "result": "switch-succeeded",
+                "message": None,
+            }
+        )
+        + "\n"
+    )
+
+    store = SwitchHistoryStore(history_path)
+    event = store.load()[0]
+
+    assert event == SwitchEvent(
+        occurred_at=datetime(2026, 4, 17, 11, 15, tzinfo=UTC),
+        from_account_index=0,
+        to_account_index=1,
+        mode="watch-auto",
+        result="switch-succeeded",
+        message=None,
+    )
+    assert event.mode == "watch-auto"
+    assert event.result == "switch-succeeded"
+
+
 def test_load_raises_coherent_error_for_malformed_jsonl(tmp_path) -> None:
     history_path = tmp_path / "switch-history.jsonl"
     history_path.write_text(

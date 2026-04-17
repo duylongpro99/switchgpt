@@ -11,6 +11,12 @@ class AccountState(StrEnum):
     ERROR = "error"
 
 
+class LimitState(StrEnum):
+    LIMIT_DETECTED = "limit_detected"
+    NO_LIMIT_DETECTED = "no_limit_detected"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class AccountRecord:
     index: int
@@ -21,6 +27,7 @@ class AccountRecord:
     last_validated_at: datetime
     status: AccountState
     last_error: str | None
+
 
 @dataclass(frozen=True)
 class AccountSnapshot:
