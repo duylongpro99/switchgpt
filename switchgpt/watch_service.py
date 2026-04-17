@@ -48,12 +48,20 @@ class WatchService:
             raise SwitchError(
                 "Automatic switching requires at least two registered accounts."
             )
-        if snapshot.active_account_index is None:
+        known_account_indexes = {account.index for account in snapshot.accounts}
+        if snapshot.active_account_index not in known_account_indexes:
             raise SwitchError(
                 "Automatic switching requires a known active account."
             )
 
-        context, page = self._managed_browser.ensure_runtime()
+        try:
+            context, page = self._managed_browser.ensure_runtime()
+        except ManagedBrowserError:
+            return WatchRunResult(
+                "browser-runtime-failure",
+                1,
+                snapshot.active_account_index,
+            )
         del context
         excluded_indexes: set[int] = set()
         active_index = snapshot.active_account_index

@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from switchgpt.errors import SwitchError
+from switchgpt.errors import ManagedBrowserError, SwitchError
 from switchgpt.models import AccountRecord, AccountState, LimitState
 from switchgpt.switch_history import SwitchEvent
 from switchgpt.watch_service import WatchService
@@ -23,11 +23,14 @@ class FakeAccountStore:
 
 
 class FakeManagedBrowser:
-    def __init__(self, detections) -> None:
+    def __init__(self, detections, ensure_runtime_error: Exception | None = None) -> None:
         self._detections = list(detections)
         self._calls = 0
+        self._ensure_runtime_error = ensure_runtime_error
 
     def ensure_runtime(self):
+        if self._ensure_runtime_error is not None:
+            raise self._ensure_runtime_error
         return "context", "page"
 
     def detect_limit_state(self, page):
@@ -200,3 +203,45 @@ def test_run_returns_user_interrupted_when_sleep_is_interrupted() -> None:
     assert result.reason == "user-interrupted"
     assert result.exit_code == 130
     assert history_store.events[-1].result == "user-interrupted"
+
+
+def test_run_requires_active_index_to_match_registered_account() -> None:
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=7,
+        ),
+        managed_browser=FakeManagedBrowser(detections=[LimitState.NO_LIMIT_DETECTED]),
+        switch_service=FakeSwitchService(),
+        history_store=FakeHistoryStore(),
+        poll_interval_seconds=0.0,
+    )
+
+    try:
+        service.run(notify=None, sleep_fn=lambda _: None, stop_after_cycles=1)
+    except SwitchError as exc:
+        assert str(exc) == "Automatic switching requires a known active account."
+    else:
+        raise AssertionError("Expected SwitchError for unknown active account.")
+
+
+def test_run_returns_browser_runtime_failure_when_initial_runtime_setup_fails() -> None:
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        managed_browser=FakeManagedBrowser(
+            detections=[LimitState.NO_LIMIT_DETECTED],
+            ensure_runtime_error=ManagedBrowserError("runtime unavailable"),
+        ),
+        switch_service=FakeSwitchService(),
+        history_store=FakeHistoryStore(),
+        poll_interval_seconds=0.0,
+    )
+
+    result = service.run(notify=None, sleep_fn=lambda _: None, stop_after_cycles=1)
+
+    assert result.reason == "browser-runtime-failure"
+    assert result.exit_code == 1
+    assert result.active_account_index == 0
