@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from switchgpt.managed_browser import ManagedBrowser
 
 
@@ -65,3 +67,42 @@ def test_is_authenticated_rejects_login_page() -> None:
     page.text = "Log in"
 
     assert browser.is_authenticated(page) is False
+
+
+def test_open_workspace_creates_profile_dir_and_returns_runtime_handles(tmp_path, monkeypatch) -> None:
+    launched = {}
+
+    class FakePage:
+        def goto(self, url: str) -> None:
+            launched["goto"] = url
+
+    class FakeBrowserContext:
+        def __init__(self) -> None:
+            self.pages = []
+
+        def new_page(self):
+            return FakePage()
+
+    class FakeChromium:
+        def launch_persistent_context(self, profile_dir: str, headless: bool):
+            launched["profile_dir"] = profile_dir
+            launched["headless"] = headless
+            return FakeBrowserContext()
+
+    class FakePlaywrightHandle:
+        chromium = FakeChromium()
+
+    class FakePlaywrightFactory:
+        def start(self):
+            return FakePlaywrightHandle()
+
+    monkeypatch.setattr("switchgpt.managed_browser.sync_playwright", lambda: FakePlaywrightFactory())
+
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=tmp_path / "profile")
+    context, page = browser.open_workspace()
+
+    assert Path(launched["profile_dir"]) == tmp_path / "profile"
+    assert launched["headless"] is False
+    assert launched["goto"] == "https://chatgpt.com"
+    assert context is not None
+    assert page is not None
