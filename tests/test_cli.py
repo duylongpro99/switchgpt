@@ -175,3 +175,38 @@ def test_add_command_reports_slot_exhaustion_cleanly(monkeypatch, tmp_path) -> N
     assert result.exit_code == 1
     assert "No empty account slots remain." in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_switch_command_reports_selected_account(monkeypatch) -> None:
+    class FakeService:
+        def switch_next(self):
+            class Result:
+                mode = "auto-target"
+
+                class Account:
+                    index = 1
+                    email = "account2@example.com"
+
+                account = Account()
+
+            return Result()
+
+    monkeypatch.setattr("switchgpt.cli.build_switch_service", lambda: FakeService())
+
+    result = runner.invoke(app, ["switch"])
+
+    assert result.exit_code == 0
+    assert "Switched to account2@example.com in slot 1." in result.stdout
+
+
+def test_open_command_reports_managed_workspace_ready(monkeypatch) -> None:
+    class FakeManagedBrowser:
+        def open_workspace(self):
+            return None
+
+    monkeypatch.setattr("switchgpt.cli.build_managed_browser", lambda: FakeManagedBrowser())
+
+    result = runner.invoke(app, ["open"])
+
+    assert result.exit_code == 0
+    assert "Managed ChatGPT workspace is ready." in result.stdout
