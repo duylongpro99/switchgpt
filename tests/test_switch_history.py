@@ -135,6 +135,14 @@ def test_load_reads_watch_auto_events_from_jsonl(tmp_path) -> None:
     store = SwitchHistoryStore(history_path)
     event = store.load()[0]
 
+    assert event == SwitchEvent(
+        occurred_at=datetime(2026, 4, 17, 11, 15, tzinfo=UTC),
+        from_account_index=0,
+        to_account_index=1,
+        mode="watch-auto",
+        result="switch-succeeded",
+        message=None,
+    )
     assert event.mode == "watch-auto"
     assert event.result == "switch-succeeded"
 
