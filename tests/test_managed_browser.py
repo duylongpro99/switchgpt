@@ -17,6 +17,10 @@ class FakeContext:
         self.cookies_cleared = True
 
     def add_cookies(self, cookies) -> None:
+        for cookie in cookies:
+            has_url = "url" in cookie
+            has_domain_and_path = "domain" in cookie and "path" in cookie
+            assert has_url or has_domain_and_path
         self.cookies_added.extend(cookies)
 
     def is_closed(self) -> bool:
@@ -106,6 +110,7 @@ def test_prepare_switch_clears_and_injects_cookies() -> None:
     assert session_cookie["domain"] == ".chatgpt.com"
     assert csrf_cookie["name"] == "__Host-next-auth.csrf-token"
     assert csrf_cookie["secure"] is True
+    assert csrf_cookie["url"] == "https://chatgpt.com"
     assert "domain" not in csrf_cookie
     assert page.visited[-1] == "https://chatgpt.com"
 

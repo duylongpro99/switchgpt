@@ -147,6 +147,7 @@ class ManagedBrowser:
                 {
                     "name": "__Host-next-auth.csrf-token",
                     "value": csrf_token,
+                    "url": self.base_url,
                     "path": "/",
                     "secure": True,
                 }

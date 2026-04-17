@@ -199,6 +199,27 @@ def test_switch_command_reports_selected_account(monkeypatch) -> None:
     assert "Switched to account2@example.com in slot 1." in result.stdout
 
 
+def test_switch_command_reports_selected_account_for_default_path(monkeypatch) -> None:
+    class FakeService:
+        def switch_next(self):
+            account = type(
+                "Account",
+                (),
+                {
+                    "index": 1,
+                    "email": "account2@example.com",
+                },
+            )()
+            return type("Result", (), {"mode": "auto-target", "account": account})()
+
+    monkeypatch.setattr("switchgpt.cli.build_switch_service", lambda: FakeService())
+
+    result = runner.invoke(app, ["switch"])
+
+    assert result.exit_code == 0
+    assert "Switched to account2@example.com in slot 1." in result.stdout
+
+
 def test_switch_command_surfaces_switch_error_cleanly(monkeypatch) -> None:
     class FakeService:
         def switch_to(self, index: int):

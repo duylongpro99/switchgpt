@@ -3,6 +3,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
+from .errors import SwitchHistoryError
+
 
 @dataclass(frozen=True)
 class SwitchEvent:
@@ -31,21 +33,26 @@ class SwitchHistoryStore:
 
         events: list[SwitchEvent] = []
         with self._history_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
+            for line_number, line in enumerate(handle, start=1):
                 line = line.strip()
                 if not line:
                     continue
-                payload = json.loads(line)
-                events.append(
-                    SwitchEvent(
-                        occurred_at=datetime.fromisoformat(payload["occurred_at"]),
-                        from_account_index=payload["from_account_index"],
-                        to_account_index=payload["to_account_index"],
-                        mode=payload["mode"],
-                        result=payload["result"],
-                        message=payload["message"],
+                try:
+                    payload = json.loads(line)
+                    events.append(
+                        SwitchEvent(
+                            occurred_at=datetime.fromisoformat(payload["occurred_at"]),
+                            from_account_index=payload["from_account_index"],
+                            to_account_index=payload["to_account_index"],
+                            mode=payload["mode"],
+                            result=payload["result"],
+                            message=payload["message"],
+                        )
                     )
-                )
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise SwitchHistoryError(
+                        f"Malformed switch history line {line_number} in {self._history_path}."
+                    ) from exc
         return events
 
     def read(self) -> list[SwitchEvent]:

@@ -24,3 +24,7 @@ class ManagedBrowserError(SwitchGptError):
 
 class SwitchError(SwitchGptError):
     """Raised when a manual switch cannot be completed."""
+
+
+class SwitchHistoryError(SwitchGptError):
+    """Raised when switch history cannot be parsed or read."""

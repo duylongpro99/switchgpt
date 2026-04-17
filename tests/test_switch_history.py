@@ -1,6 +1,9 @@
 from datetime import UTC, datetime
 import json
 
+import pytest
+
+from switchgpt.errors import SwitchHistoryError
 from switchgpt.switch_history import SwitchEvent, SwitchHistoryStore
 
 
@@ -111,3 +114,30 @@ def test_load_reads_switch_events_from_jsonl(tmp_path) -> None:
             message="metadata load failed",
         ),
     ]
+
+
+def test_load_raises_coherent_error_for_malformed_jsonl(tmp_path) -> None:
+    history_path = tmp_path / "switch-history.jsonl"
+    history_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "occurred_at": "2026-04-16T11:15:00+00:00",
+                        "from_account_index": 0,
+                        "to_account_index": 1,
+                        "mode": "explicit-target",
+                        "result": "success",
+                        "message": None,
+                    }
+                ),
+                "{not-json}",
+            ]
+        )
+        + "\n"
+    )
+
+    store = SwitchHistoryStore(history_path)
+
+    with pytest.raises(SwitchHistoryError, match="Malformed switch history line 2"):
+        store.load()
