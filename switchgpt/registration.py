@@ -46,6 +46,32 @@ class RegistrationService:
         existing = self._account_store.get_record(index)
         previous_secret = self._secret_store.read(existing.keychain_key)
         result = self._browser_client.reauth(existing.email)
+        return self._persist_reauth_result(
+            existing=existing,
+            previous_secret=previous_secret,
+            result=result,
+        )
+
+    def reauth_in_managed_workspace(self, *, index: int, page) -> AccountRecord:
+        existing = self._account_store.get_record(index)
+        previous_secret = self._secret_store.read(existing.keychain_key)
+        result = self._browser_client.capture_existing_session(
+            page,
+            existing_email=existing.email,
+        )
+        return self._persist_reauth_result(
+            existing=existing,
+            previous_secret=previous_secret,
+            result=result,
+        )
+
+    def _persist_reauth_result(
+        self,
+        *,
+        existing: AccountRecord,
+        previous_secret: SessionSecret | None,
+        result: RegistrationResult,
+    ) -> AccountRecord:
         self._secret_store.replace(existing.keychain_key, result.secret)
         refreshed = AccountRecord(
             index=existing.index,

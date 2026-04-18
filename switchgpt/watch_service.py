@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import time
 
-from .errors import ManagedBrowserError, SwitchError
+from .errors import ManagedBrowserError, ReauthRequiredError, SwitchError
 from .models import LimitState
 from .switch_history import SwitchEvent
 
@@ -27,12 +27,14 @@ class WatchService:
         managed_browser,
         switch_service,
         history_store,
+        registration_service=None,
         *,
         poll_interval_seconds: float = 2.0,
     ) -> None:
         self._account_store = account_store
         self._managed_browser = managed_browser
         self._switch_service = switch_service
+        self._registration_service = registration_service
         self._history_store = history_store
         self._poll_interval_seconds = poll_interval_seconds
 
@@ -92,6 +94,38 @@ class WatchService:
                         result = self._switch_service.switch_to(
                             account.index, mode="watch-auto"
                         )
+                    except ReauthRequiredError:
+                        try:
+                            active_index = self._handle_reauth_required(
+                                notify,
+                                active_index=active_index,
+                                target_index=account.index,
+                                page=page,
+                            )
+                        except KeyboardInterrupt:
+                            self._record_reauth_failure(
+                                active_index=active_index,
+                                target_index=account.index,
+                                message=f"Reauthentication interrupted for slot {account.index}.",
+                            )
+                            return self._finish_user_interrupted(notify, active_index)
+                        except ManagedBrowserError:
+                            self._record_reauth_failure(
+                                active_index=active_index,
+                                target_index=account.index,
+                                message=f"Managed workspace became unavailable during reauthentication for slot {account.index}.",
+                            )
+                            return self._finish_browser_runtime_failure(notify, active_index)
+                        except Exception as exc:
+                            excluded_indexes.add(account.index)
+                            self._record_reauth_failure(
+                                active_index=active_index,
+                                target_index=account.index,
+                                message=str(exc),
+                            )
+                            self._emit(notify, "account-exhausted-for-run", str(exc))
+                            continue
+                        break
                     except SwitchError as exc:
                         excluded_indexes.add(account.index)
                         self._emit(notify, "account-exhausted-for-run", str(exc))
@@ -164,3 +198,68 @@ class WatchService:
             )
         )
         return WatchRunResult("user-interrupted", 130, active_index)
+
+    def _handle_reauth_required(
+        self,
+        notify,
+        *,
+        active_index: int,
+        target_index: int,
+        page,
+    ) -> int:
+        if self._registration_service is None:
+            raise SwitchError("Watch reauthentication requires a registration service.")
+        self._emit(
+            notify,
+            "reauth-required",
+            f"Slot {target_index} requires reauthentication in the managed browser.",
+        )
+        self._history_store.append(
+            SwitchEvent(
+                occurred_at=datetime.now(UTC),
+                from_account_index=active_index,
+                to_account_index=target_index,
+                mode="watch-auto",
+                result="reauth-started",
+                message=f"Starting in-session reauthentication for slot {target_index}.",
+            )
+        )
+        self._managed_browser.wait_for_reauthentication(page)
+        record = self._registration_service.reauth_in_managed_workspace(
+            index=target_index,
+            page=page,
+        )
+        self._history_store.append(
+            SwitchEvent(
+                occurred_at=datetime.now(UTC),
+                from_account_index=active_index,
+                to_account_index=record.index,
+                mode="watch-auto",
+                result="resume-succeeded",
+                message=f"Reauthentication succeeded for slot {record.index}; resuming watch.",
+            )
+        )
+        self._emit(
+            notify,
+            "resume-succeeded",
+            f"Reauthenticated slot {record.index}; resuming watch.",
+        )
+        return record.index
+
+    def _record_reauth_failure(
+        self,
+        *,
+        active_index: int,
+        target_index: int,
+        message: str,
+    ) -> None:
+        self._history_store.append(
+            SwitchEvent(
+                occurred_at=datetime.now(UTC),
+                from_account_index=active_index,
+                to_account_index=target_index,
+                mode="watch-auto",
+                result="reauth-failed",
+                message=message,
+            )
+        )

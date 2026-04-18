@@ -103,3 +103,23 @@ class BrowserRegistrationClient:
 
     def reauth(self, existing_email: str) -> RegistrationResult:
         return self.register()
+
+    def capture_existing_session(self, page, *, existing_email: str) -> RegistrationResult:
+        self._assert_authenticated_state(page)
+        context = page.context
+        cookies = context.cookies()
+        session_token = self._require_cookie_value(
+            cookies, "__Secure-next-auth.session-token"
+        )
+        csrf_cookie = self._optional_cookie_value(
+            cookies, "__Host-next-auth.csrf-token"
+        )
+        email = self._discover_email(page) or self._normalize_email(existing_email)
+        return RegistrationResult(
+            email=email,
+            secret=SessionSecret(
+                session_token=session_token,
+                csrf_token=csrf_cookie,
+            ),
+            captured_at=datetime.now(UTC),
+        )

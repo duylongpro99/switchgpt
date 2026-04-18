@@ -1,8 +1,11 @@
+import platform
+
 import typer
 
 from .account_store import AccountStore
 from .config import Settings, ensure_supported_platform
 from .errors import SwitchGptError
+from .doctor_service import DoctorService
 from .managed_browser import ManagedBrowser
 from .playwright_client import BrowserRegistrationClient
 from .registration import RegistrationService
@@ -32,8 +35,23 @@ def build_registration_service() -> RegistrationService:
 def build_status_service() -> tuple[AccountStore, StatusService]:
     settings = Settings.from_env()
     store = AccountStore(settings.metadata_path, settings.slot_count)
-    service = StatusService(KeychainSecretStore(settings.keychain_service))
+    history_store = SwitchHistoryStore(settings.switch_history_path)
+    service = StatusService(
+        KeychainSecretStore(settings.keychain_service),
+        history_store=history_store,
+    )
     return store, service
+
+
+def build_doctor_service() -> DoctorService:
+    settings = Settings.from_env()
+    return DoctorService(
+        metadata_store=AccountStore(settings.metadata_path, settings.slot_count),
+        history_store=SwitchHistoryStore(settings.switch_history_path),
+        secret_store=KeychainSecretStore(settings.keychain_service),
+        managed_browser=build_managed_browser(),
+        platform_name=platform.system(),
+    )
 
 
 def build_managed_browser() -> ManagedBrowser:
@@ -61,10 +79,12 @@ def build_switch_service() -> SwitchService:
 def build_watch_service() -> WatchService:
     store, secret_store, managed_browser, history_store = _build_switch_components()
     switch_service = SwitchService(store, secret_store, managed_browser, history_store)
+    registration_service = build_registration_service()
     return WatchService(
         account_store=store,
         managed_browser=managed_browser,
         switch_service=switch_service,
+        registration_service=registration_service,
         history_store=history_store,
     )
 
@@ -77,9 +97,34 @@ def status() -> None:
         if not snapshot.accounts:
             print("No accounts registered.")
             return
-        for account in snapshot.accounts:
-            slot = service.classify(account)
+        summary = service.summarize(
+            snapshot.accounts,
+            active_account_index=snapshot.active_account_index,
+        )
+        print(f"Readiness: {summary.readiness}")
+        if summary.active_account_index is not None:
+            print(f"Active slot: {summary.active_account_index}")
+        if summary.latest_result is not None:
+            print(f"Latest result: {summary.latest_result}")
+        if summary.next_action is not None:
+            print(f"Next action: {summary.next_action}")
+        for slot in summary.slots:
             print(f"[{slot.index}] {slot.email} - {slot.state}")
+    except SwitchGptError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def doctor() -> None:
+    try:
+        service = build_doctor_service()
+        report = service.run()
+        print(f"Readiness: {report.readiness}")
+        for check in report.checks:
+            print(f"{check.name}: {check.status} - {check.detail}")
+            if check.next_action:
+                print(f"next: {check.next_action}")
     except SwitchGptError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc

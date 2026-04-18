@@ -28,32 +28,44 @@ class SwitchHistoryStore:
             handle.write(json.dumps(payload) + "\n")
 
     def load(self) -> list[SwitchEvent]:
-        if not self._history_path.exists():
-            return []
-
         events: list[SwitchEvent] = []
-        with self._history_path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    payload = json.loads(line)
-                    events.append(
-                        SwitchEvent(
-                            occurred_at=datetime.fromisoformat(payload["occurred_at"]),
-                            from_account_index=payload["from_account_index"],
-                            to_account_index=payload["to_account_index"],
-                            mode=payload["mode"],
-                            result=payload["result"],
-                            message=payload["message"],
+        try:
+            if not self._history_path.exists():
+                return []
+            with self._history_path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                        if not isinstance(payload, dict):
+                            raise TypeError("Switch history entries must decode to objects.")
+                        events.append(
+                            SwitchEvent(
+                                occurred_at=datetime.fromisoformat(payload["occurred_at"]),
+                                from_account_index=payload["from_account_index"],
+                                to_account_index=payload["to_account_index"],
+                                mode=payload["mode"],
+                                result=payload["result"],
+                                message=payload.get("message"),
+                            )
                         )
-                    )
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-                    raise SwitchHistoryError(
-                        f"Malformed switch history line {line_number} in {self._history_path}."
-                    ) from exc
+                    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                        raise SwitchHistoryError(
+                            f"Malformed switch history line {line_number} in {self._history_path}."
+                        ) from exc
+        except OSError as exc:
+            raise SwitchHistoryError(
+                f"Unable to read switch history at {self._history_path}."
+            ) from exc
         return events
 
     def read(self) -> list[SwitchEvent]:
         return self.load()
+
+    def latest(self) -> SwitchEvent | None:
+        events = self.load()
+        if not events:
+            return None
+        return events[-1]

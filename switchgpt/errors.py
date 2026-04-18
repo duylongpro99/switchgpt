@@ -28,3 +28,11 @@ class SwitchError(SwitchGptError):
 
 class SwitchHistoryError(SwitchGptError):
     """Raised when switch history cannot be parsed or read."""
+
+
+class ReauthRequiredError(SwitchError):
+    """Raised when an account can continue only after explicit reauthentication."""
+
+
+class DoctorCheckError(SwitchGptError):
+    """Raised when a bounded doctor check cannot complete normally."""

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from .errors import SwitchError
+from .errors import ReauthRequiredError, SwitchError
 from .switch_history import SwitchEvent
 
 
@@ -92,11 +92,11 @@ class SwitchService:
                     previous_active_index=previous_active_index,
                     account_index=account.index,
                     mode=mode,
-                    result="post-switch-auth-failed",
-                    message=f"Authenticated state verification failed for slot {account.index}.",
+                    result="needs-reauth",
+                    message=f"Account slot {account.index} likely needs reauthentication.",
                 )
                 event_recorded = True
-                raise SwitchError(
+                raise ReauthRequiredError(
                     f"Account slot {account.index} likely needs reauthentication."
                 )
 

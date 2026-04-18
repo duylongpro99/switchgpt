@@ -11,6 +11,7 @@ LIMIT_DETECTION_MARKERS = (
     "try again later",
     "usage limit",
 )
+RUNTIME_PROBE_TIMEOUT_MS = 5000
 
 
 @dataclass
@@ -42,7 +43,7 @@ class ManagedBrowser:
                 page = self._resolve_live_page(context, None)
                 page.goto(self.base_url)
             except Exception as exc:
-                self._discard_runtime()
+                self._discard_runtime(stop_playwright=True)
                 raise ManagedBrowserError("Unable to launch the managed ChatGPT browser workspace.") from exc
 
         self._context = context
@@ -51,6 +52,36 @@ class ManagedBrowser:
 
     def ensure_runtime(self):
         return self.open_workspace()
+
+    def can_open_workspace(
+        self,
+        *,
+        probe_profile_dir=None,
+        headless: bool = False,
+    ) -> bool:
+        if probe_profile_dir is None and self._is_live_context(self._context):
+            return True
+        profile_dir = self.profile_dir if probe_profile_dir is None else Path(probe_profile_dir)
+        if profile_dir is None:
+            return False
+
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        playwright = None
+        context = None
+        try:
+            playwright = sync_playwright().start()
+            context = playwright.chromium.launch_persistent_context(
+                str(profile_dir),
+                headless=headless,
+            )
+            page = self._resolve_live_page(context, None)
+            page.goto(self.base_url, timeout=RUNTIME_PROBE_TIMEOUT_MS)
+        except Exception:
+            return False
+        finally:
+            self._close_context(context)
+            self._stop_playwright(playwright)
+        return True
 
     def _launch_runtime(self, *, replace_existing: bool = False):
         if replace_existing:
@@ -131,6 +162,16 @@ class ManagedBrowser:
             except Exception:
                 pass
 
+    def _close_context(self, context) -> None:
+        if context is None:
+            return
+        closer = getattr(context, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
+
     def prepare_switch(
         self,
         context,
@@ -180,3 +221,14 @@ class ManagedBrowser:
         if any(marker in body for marker in LIMIT_DETECTION_MARKERS):
             return LimitState.LIMIT_DETECTED
         return LimitState.NO_LIMIT_DETECTED
+
+    def wait_for_reauthentication(self, page) -> None:
+        input(
+            "[switchgpt] Complete reauthentication in the managed browser, then press ENTER here."
+        )
+        try:
+            page.goto(self.base_url)
+        except Exception as exc:
+            raise ManagedBrowserError(
+                "Unable to launch the managed ChatGPT browser workspace."
+            ) from exc

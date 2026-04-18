@@ -1,0 +1,192 @@
+from datetime import UTC, datetime
+
+from switchgpt.doctor_service import DoctorService
+from switchgpt.errors import AccountStoreError, SecretStoreError, SwitchHistoryError
+
+
+class FakeManagedBrowser:
+    def __init__(self, can_open: bool) -> None:
+        self._can_open = can_open
+        self.calls = []
+
+    def can_open_workspace(self, **kwargs) -> bool:
+        self.calls.append(kwargs)
+        return self._can_open
+
+
+class Snapshot:
+    def __init__(self, accounts) -> None:
+        self.accounts = accounts
+        self.active_account_index = None
+        self.last_switch_at = datetime(2026, 4, 17, 12, 0, tzinfo=UTC)
+
+
+class Account:
+    def __init__(self, keychain_key: str) -> None:
+        self.keychain_key = keychain_key
+
+
+def test_run_reports_watch_readiness_when_all_checks_pass() -> None:
+    managed_browser = FakeManagedBrowser(can_open=True)
+    service = DoctorService(
+        metadata_store=type(
+            "Store",
+            (),
+            {"load": lambda self: Snapshot([Account("switchgpt_account_0")])},
+        )(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type(
+            "Secrets", (), {"exists": lambda self, key: key == "switchgpt_account_0"}
+        )(),
+        managed_browser=managed_browser,
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    assert report.readiness == "watch-ready"
+    assert all(check.status == "pass" for check in report.checks)
+    assert managed_browser.calls[0]["headless"] is True
+
+
+def test_run_reports_needs_attention_when_keychain_secret_is_missing() -> None:
+    service = DoctorService(
+        metadata_store=type(
+            "Store",
+            (),
+            {"load": lambda self: Snapshot([Account("switchgpt_account_0")])},
+        )(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type("Secrets", (), {"exists": lambda self, key: False})(),
+        managed_browser=FakeManagedBrowser(can_open=True),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    assert report.readiness == "needs-attention"
+    keychain_check = next(check for check in report.checks if check.name == "keychain")
+    assert keychain_check.status == "fail"
+    assert keychain_check.next_action is not None
+
+
+def test_run_reports_metadata_failure_cleanly() -> None:
+    class BrokenStore:
+        def load(self):
+            raise AccountStoreError("Malformed account metadata.")
+
+    service = DoctorService(
+        metadata_store=BrokenStore(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
+        managed_browser=FakeManagedBrowser(can_open=True),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    assert report.readiness == "needs-attention"
+    metadata_check = next(check for check in report.checks if check.name == "metadata")
+    assert metadata_check.status == "fail"
+
+
+def test_run_reports_history_warning_cleanly() -> None:
+    service = DoctorService(
+        metadata_store=type("Store", (), {"load": lambda self: Snapshot([])})(),
+        history_store=type(
+            "History",
+            (),
+            {"load": lambda self: (_ for _ in ()).throw(SwitchHistoryError("bad history"))},
+        )(),
+        secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
+        managed_browser=FakeManagedBrowser(can_open=True),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    history_check = next(check for check in report.checks if check.name == "history")
+    assert history_check.status == "warn"
+    assert report.readiness == "needs-attention"
+
+
+def test_run_reports_platform_failure_cleanly() -> None:
+    service = DoctorService(
+        metadata_store=type("Store", (), {"load": lambda self: Snapshot([])})(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
+        managed_browser=FakeManagedBrowser(can_open=True),
+        platform_name="Linux",
+    )
+
+    report = service.run()
+
+    platform_check = next(check for check in report.checks if check.name == "platform")
+    assert platform_check.status == "fail"
+    assert report.readiness == "needs-attention"
+
+
+def test_run_loads_metadata_once_for_stable_diagnosis() -> None:
+    class CountingStore:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def load(self):
+            self.calls += 1
+            return Snapshot([Account("switchgpt_account_0")])
+
+    store = CountingStore()
+    service = DoctorService(
+        metadata_store=store,
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type(
+            "Secrets", (), {"exists": lambda self, key: key == "switchgpt_account_0"}
+        )(),
+        managed_browser=FakeManagedBrowser(can_open=True),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    assert report.readiness == "watch-ready"
+    assert store.calls == 1
+
+
+def test_run_reports_keychain_backend_failure_cleanly() -> None:
+    class BrokenSecrets:
+        def exists(self, key: str) -> bool:
+            raise SecretStoreError("Secret backend read failed.")
+
+    service = DoctorService(
+        metadata_store=type(
+            "Store",
+            (),
+            {"load": lambda self: Snapshot([Account("switchgpt_account_0")])},
+        )(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=BrokenSecrets(),
+        managed_browser=FakeManagedBrowser(can_open=True),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    keychain_check = next(check for check in report.checks if check.name == "keychain")
+    assert keychain_check.status == "fail"
+    assert report.readiness == "needs-attention"
+
+
+def test_run_reports_managed_browser_failure_cleanly() -> None:
+    service = DoctorService(
+        metadata_store=type("Store", (), {"load": lambda self: Snapshot([])})(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
+        managed_browser=FakeManagedBrowser(can_open=False),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    runtime_check = next(check for check in report.checks if check.name == "managed-browser")
+    assert runtime_check.status == "fail"
+    assert report.readiness == "needs-attention"

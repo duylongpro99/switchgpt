@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from switchgpt.errors import ManagedBrowserError, SwitchError
+from switchgpt.errors import ManagedBrowserError, ReauthRequiredError, SwitchError
 from switchgpt.models import AccountRecord, AccountState, LimitState
 from switchgpt.switch_history import SwitchEvent
 from switchgpt.watch_service import WatchService
@@ -28,12 +28,15 @@ class FakeManagedBrowser:
         detections,
         ensure_runtime_error: Exception | None = None,
         detect_limit_state_error: Exception | None = None,
+        wait_for_reauthentication_error: Exception | None = None,
     ) -> None:
         self._detections = list(detections)
         self._calls = 0
         self._ensure_runtime_error = ensure_runtime_error
         self._detect_limit_state_error = detect_limit_state_error
+        self._wait_for_reauthentication_error = wait_for_reauthentication_error
         self.ensure_runtime_calls = 0
+        self.waited_pages = []
 
     def ensure_runtime(self):
         if self._ensure_runtime_error is not None:
@@ -47,6 +50,11 @@ class FakeManagedBrowser:
         detection = self._detections[min(self._calls, len(self._detections) - 1)]
         self._calls += 1
         return detection
+
+    def wait_for_reauthentication(self, page) -> None:
+        if self._wait_for_reauthentication_error is not None:
+            raise self._wait_for_reauthentication_error
+        self.waited_pages.append(page)
 
 
 class FakeRotatingManagedBrowser:
@@ -95,6 +103,18 @@ class FakeHistoryStore:
 
     def append(self, event: SwitchEvent) -> None:
         self.events.append(event)
+
+
+class FakeRegistrationService:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.calls = []
+        self._error = error
+
+    def reauth_in_managed_workspace(self, *, index: int, page):
+        if self._error is not None:
+            raise self._error
+        self.calls.append((index, page))
+        return build_account(index, f"reauth{index}@example.com")
 
 
 def build_account(index: int, email: str) -> AccountRecord:
@@ -244,6 +264,173 @@ def test_run_stops_with_no_eligible_account_when_all_candidates_fail() -> None:
     assert result.exit_code == 1
     assert history_store.events[-1].mode == "watch-auto"
     assert history_store.events[-1].result == "no-eligible-account"
+
+
+def test_run_enters_reauth_flow_and_resumes_monitoring() -> None:
+    notifications = []
+    managed_browser = FakeManagedBrowser(
+        detections=[LimitState.LIMIT_DETECTED, LimitState.NO_LIMIT_DETECTED]
+    )
+    switch_service = FakeSwitchService(
+        failures={1: ReauthRequiredError("Account slot 1 likely needs reauthentication.")}
+    )
+    registration_service = FakeRegistrationService()
+    history_store = FakeHistoryStore()
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        managed_browser=managed_browser,
+        switch_service=switch_service,
+        registration_service=registration_service,
+        history_store=history_store,
+        poll_interval_seconds=0.0,
+    )
+
+    result = service.run(
+        notify=notifications.append,
+        sleep_fn=lambda _: None,
+        stop_after_cycles=2,
+    )
+
+    assert result.reason == "cycle-limit"
+    assert result.active_account_index == 1
+    assert registration_service.calls == [(1, "page")]
+    assert managed_browser.waited_pages == ["page"]
+    assert any(event.kind == "reauth-required" for event in notifications)
+    assert any(event.kind == "resume-succeeded" for event in notifications)
+    assert history_store.events[-2].result == "reauth-started"
+    assert history_store.events[-1].result == "resume-succeeded"
+
+
+def test_run_records_reauth_failure_and_stops_when_reauth_is_interrupted() -> None:
+    managed_browser = FakeManagedBrowser(
+        detections=[LimitState.LIMIT_DETECTED],
+        wait_for_reauthentication_error=KeyboardInterrupt(),
+    )
+    switch_service = FakeSwitchService(
+        failures={1: ReauthRequiredError("Account slot 1 likely needs reauthentication.")}
+    )
+    history_store = FakeHistoryStore()
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        managed_browser=managed_browser,
+        switch_service=switch_service,
+        registration_service=FakeRegistrationService(),
+        history_store=history_store,
+        poll_interval_seconds=0.0,
+    )
+
+    result = service.run(
+        notify=None,
+        sleep_fn=lambda _: None,
+        stop_after_cycles=1,
+    )
+
+    assert result.reason == "user-interrupted"
+    assert [event.result for event in history_store.events[-3:]] == [
+        "reauth-started",
+        "reauth-failed",
+        "user-interrupted",
+    ]
+
+
+def test_run_records_reauth_failure_and_stops_on_runtime_failure_during_reauth() -> None:
+    managed_browser = FakeManagedBrowser(
+        detections=[LimitState.LIMIT_DETECTED],
+        wait_for_reauthentication_error=ManagedBrowserError("runtime unavailable"),
+    )
+    switch_service = FakeSwitchService(
+        failures={1: ReauthRequiredError("Account slot 1 likely needs reauthentication.")}
+    )
+    history_store = FakeHistoryStore()
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        managed_browser=managed_browser,
+        switch_service=switch_service,
+        registration_service=FakeRegistrationService(),
+        history_store=history_store,
+        poll_interval_seconds=0.0,
+    )
+
+    result = service.run(
+        notify=None,
+        sleep_fn=lambda _: None,
+        stop_after_cycles=1,
+    )
+
+    assert result.reason == "browser-runtime-failure"
+    assert [event.result for event in history_store.events[-3:]] == [
+        "reauth-started",
+        "reauth-failed",
+        "browser-runtime-failure",
+    ]
+
+
+def test_run_records_reauth_failure_and_tries_next_candidate_when_capture_fails() -> None:
+    managed_browser = FakeManagedBrowser(detections=[LimitState.LIMIT_DETECTED])
+    switch_service = FakeSwitchService(
+        failures={1: ReauthRequiredError("Account slot 1 likely needs reauthentication.")}
+    )
+    history_store = FakeHistoryStore()
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [
+                build_account(0, "a@example.com"),
+                build_account(1, "b@example.com"),
+                build_account(2, "c@example.com"),
+            ],
+            active_account_index=0,
+        ),
+        managed_browser=managed_browser,
+        switch_service=switch_service,
+        registration_service=FakeRegistrationService(error=RuntimeError("capture failed")),
+        history_store=history_store,
+        poll_interval_seconds=0.0,
+    )
+
+    result = service.run(
+        notify=None,
+        sleep_fn=lambda _: None,
+        stop_after_cycles=1,
+    )
+
+    assert result.active_account_index == 2
+    assert any(event.result == "reauth-failed" for event in history_store.events)
+
+
+def test_run_marks_missing_registration_service_as_reauth_failure() -> None:
+    managed_browser = FakeManagedBrowser(detections=[LimitState.LIMIT_DETECTED])
+    switch_service = FakeSwitchService(
+        failures={1: ReauthRequiredError("Account slot 1 likely needs reauthentication.")}
+    )
+    history_store = FakeHistoryStore()
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        managed_browser=managed_browser,
+        switch_service=switch_service,
+        history_store=history_store,
+        poll_interval_seconds=0.0,
+    )
+
+    result = service.run(
+        notify=None,
+        sleep_fn=lambda _: None,
+        stop_after_cycles=1,
+    )
+
+    assert result.reason == "no-eligible-account"
+    assert any(event.result == "reauth-failed" for event in history_store.events)
 
 
 def test_run_returns_user_interrupted_when_sleep_is_interrupted() -> None:

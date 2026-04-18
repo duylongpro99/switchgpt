@@ -37,18 +37,35 @@ def test_status_lists_registered_accounts(monkeypatch) -> None:
     class FakeStore:
         class Snapshot:
             accounts = [FakeAccount()]
+            active_account_index = 0
+            last_switch_at = None
 
         def load(self):
             return self.Snapshot()
 
     class FakeStatusService:
-        def classify(self, account):
-            class Slot:
-                index = account.index
-                email = account.email
-                state = "registered"
-
-            return Slot()
+        def summarize(self, accounts, *, active_account_index):
+            return type(
+                "Summary",
+                (),
+                {
+                    "slots": [
+                        type(
+                            "Slot",
+                            (),
+                            {
+                                "index": 0,
+                                "email": "account1@example.com",
+                                "state": "registered",
+                            },
+                        )()
+                    ],
+                    "readiness": "needs-attention",
+                    "latest_result": "needs-reauth",
+                    "next_action": "Reauthenticate slot 0.",
+                    "active_account_index": active_account_index,
+                },
+            )()
 
     monkeypatch.setattr(
         "switchgpt.cli.build_status_service",
@@ -56,6 +73,10 @@ def test_status_lists_registered_accounts(monkeypatch) -> None:
     )
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
+    assert "Readiness: needs-attention" in result.stdout
+    assert "Active slot: 0" in result.stdout
+    assert "Latest result: needs-reauth" in result.stdout
+    assert "Next action: Reauthenticate slot 0." in result.stdout
     assert "[0] account1@example.com - registered" in result.stdout
 
 
@@ -247,6 +268,74 @@ def test_open_command_reports_managed_workspace_ready(monkeypatch) -> None:
     assert "Managed ChatGPT workspace is ready." in result.stdout
 
 
+def test_doctor_command_prints_check_results(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
+    class FakeDoctorService:
+        def run(self):
+            return type(
+                "Report",
+                (),
+                {
+                    "readiness": "watch-ready",
+                    "checks": [
+                        type(
+                            "Check",
+                            (),
+                            {
+                                "name": "platform",
+                                "status": "pass",
+                                "detail": "macOS detected.",
+                                "next_action": None,
+                            },
+                        )()
+                    ],
+                },
+            )()
+
+    monkeypatch.setattr("switchgpt.cli.build_doctor_service", lambda: FakeDoctorService())
+
+    result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Readiness: watch-ready" in result.stdout
+    assert "platform: pass - macOS detected." in result.stdout
+
+
+def test_doctor_command_reports_platform_failure_from_service(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Linux")
+
+    class FakeDoctorService:
+        def run(self):
+            return type(
+                "Report",
+                (),
+                {
+                    "readiness": "needs-attention",
+                    "checks": [
+                        type(
+                            "Check",
+                            (),
+                            {
+                                "name": "platform",
+                                "status": "fail",
+                                "detail": "switchgpt requires macOS.",
+                                "next_action": "Run switchgpt on macOS.",
+                            },
+                        )()
+                    ],
+                },
+            )()
+
+    monkeypatch.setattr("switchgpt.cli.build_doctor_service", lambda: FakeDoctorService())
+
+    result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Readiness: needs-attention" in result.stdout
+    assert "platform: fail - switchgpt requires macOS." in result.stdout
+
+
 def test_watch_command_prints_notifications_and_exits_zero_for_short_run(monkeypatch) -> None:
     monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
 
@@ -278,6 +367,69 @@ def test_watch_command_prints_notifications_and_exits_zero_for_short_run(monkeyp
     assert "Switched to slot 1." in result.stdout
 
 
+def test_build_watch_service_wires_registration_service(monkeypatch) -> None:
+    store = object()
+    secret_store = object()
+    managed_browser = object()
+    history_store = object()
+    registration_service = object()
+    captured = {}
+
+    monkeypatch.setattr(
+        "switchgpt.cli._build_switch_components",
+        lambda: (store, secret_store, managed_browser, history_store),
+    )
+    monkeypatch.setattr(
+        "switchgpt.cli.build_registration_service",
+        lambda: registration_service,
+    )
+
+    class FakeSwitchService:
+        def __init__(self, account_store, secret_store_arg, managed_browser_arg, history_store_arg):
+            captured["switch_args"] = (
+                account_store,
+                secret_store_arg,
+                managed_browser_arg,
+                history_store_arg,
+            )
+
+    class FakeWatchService:
+        def __init__(
+            self,
+            *,
+            account_store,
+            managed_browser,
+            switch_service,
+            registration_service,
+            history_store,
+        ) -> None:
+            captured["watch_args"] = {
+                "account_store": account_store,
+                "managed_browser": managed_browser,
+                "switch_service": switch_service,
+                "registration_service": registration_service,
+                "history_store": history_store,
+            }
+
+    monkeypatch.setattr("switchgpt.cli.SwitchService", FakeSwitchService)
+    monkeypatch.setattr("switchgpt.cli.WatchService", FakeWatchService)
+
+    from switchgpt.cli import build_watch_service
+
+    build_watch_service()
+
+    assert captured["switch_args"] == (
+        store,
+        secret_store,
+        managed_browser,
+        history_store,
+    )
+    assert captured["watch_args"]["account_store"] is store
+    assert captured["watch_args"]["managed_browser"] is managed_browser
+    assert captured["watch_args"]["registration_service"] is registration_service
+    assert captured["watch_args"]["history_store"] is history_store
+
+
 def test_watch_command_exits_non_zero_on_exhaustion(monkeypatch) -> None:
     monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
 
@@ -300,6 +452,24 @@ def test_watch_command_exits_non_zero_on_exhaustion(monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert "No eligible registered account remains for automatic switching." in result.stdout
+
+
+def test_watch_command_prints_reauth_and_resume_messages(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
+    class FakeWatchService:
+        def run(self, *, notify, sleep_fn=None, stop_after_cycles=None):
+            notify(type("Event", (), {"message": "Slot 1 requires reauthentication in the managed browser."})())
+            notify(type("Event", (), {"message": "Reauthenticated slot 1; resuming watch."})())
+            return type("Result", (), {"exit_code": 0})()
+
+    monkeypatch.setattr("switchgpt.cli.build_watch_service", lambda: FakeWatchService())
+
+    result = runner.invoke(app, ["watch"])
+
+    assert result.exit_code == 0
+    assert "Slot 1 requires reauthentication in the managed browser." in result.stdout
+    assert "Reauthenticated slot 1; resuming watch." in result.stdout
 
 
 def test_watch_command_prints_runtime_failure_message_before_exit(monkeypatch) -> None:

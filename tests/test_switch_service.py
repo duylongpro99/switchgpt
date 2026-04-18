@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from switchgpt.errors import SwitchError
+from switchgpt.errors import ReauthRequiredError, SwitchError
 from switchgpt.models import AccountRecord, AccountState
 from switchgpt.secret_store import SessionSecret
 from switchgpt.switch_history import SwitchEvent
@@ -213,14 +213,14 @@ def test_failed_auth_verification_does_not_update_active_account() -> None:
         history_store=FakeHistoryStore(),
     )
 
-    with pytest.raises(SwitchError):
+    with pytest.raises(ReauthRequiredError):
         service.switch_to(index=1)
 
     assert service._account_store.saved_runtime_state is None
-    assert service._history_store.events[-1].result == "post-switch-auth-failed"
+    assert service._history_store.events[-1].result == "needs-reauth"
 
 
-def test_failed_auth_verification_records_post_switch_auth_failed() -> None:
+def test_failed_auth_verification_records_needs_reauth() -> None:
     service = SwitchService(
         account_store=FakeAccountStore(
             [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
@@ -233,10 +233,10 @@ def test_failed_auth_verification_records_post_switch_auth_failed() -> None:
         history_store=FakeHistoryStore(),
     )
 
-    with pytest.raises(SwitchError, match="likely needs reauthentication"):
+    with pytest.raises(ReauthRequiredError, match="likely needs reauthentication"):
         service.switch_to(index=1, mode="watch-auto")
 
-    assert service._history_store.events[-1].result == "post-switch-auth-failed"
+    assert service._history_store.events[-1].result == "needs-reauth"
 
 
 def test_missing_secret_records_failure_history_before_raising() -> None:

@@ -171,6 +171,118 @@ def test_reauth_restores_old_secret_when_metadata_save_fails() -> None:
     )
 
 
+def test_reauth_in_managed_workspace_refreshes_secret_and_metadata() -> None:
+    page = object()
+    existing = AccountRecord(
+        index=0,
+        email="account0@example.com",
+        keychain_key="switchgpt_account_0",
+        registered_at=datetime(2026, 4, 16, 8, 30, tzinfo=UTC),
+        last_reauth_at=datetime(2026, 4, 16, 8, 30, tzinfo=UTC),
+        last_validated_at=datetime(2026, 4, 16, 8, 30, tzinfo=UTC),
+        status=AccountState.NEEDS_REAUTH,
+        last_error="expired session",
+    )
+
+    class FakeBrowserClient:
+        def capture_existing_session(self, page_arg, *, existing_email: str) -> RegistrationResult:
+            assert page_arg is page
+            assert existing_email == "account0@example.com"
+            return RegistrationResult(
+                email=existing_email,
+                secret=SessionSecret(session_token="new-token", csrf_token="csrf"),
+                captured_at=datetime(2026, 4, 17, 12, 0, tzinfo=UTC),
+            )
+
+    class FakeAccountStore:
+        def __init__(self) -> None:
+            self.saved = None
+
+        def get_record(self, index: int) -> AccountRecord:
+            assert index == 0
+            return existing
+
+        def save_record(self, record) -> None:
+            self.saved = record
+
+    class FakeSecretStore:
+        def __init__(self) -> None:
+            self.replaced = None
+
+        def read(self, key: str):
+            assert key == "switchgpt_account_0"
+            return SessionSecret(session_token="old-token", csrf_token=None)
+
+        def replace(self, key: str, secret: SessionSecret) -> None:
+            self.replaced = (key, secret)
+
+    account_store = FakeAccountStore()
+    secret_store = FakeSecretStore()
+    service = RegistrationService(account_store, secret_store, FakeBrowserClient())
+
+    record = service.reauth_in_managed_workspace(index=0, page=page)
+
+    assert secret_store.replaced == (
+        "switchgpt_account_0",
+        SessionSecret(session_token="new-token", csrf_token="csrf"),
+    )
+    assert account_store.saved == record
+    assert record.status is AccountState.REGISTERED
+    assert record.last_error is None
+    assert record.last_reauth_at == datetime(2026, 4, 17, 12, 0, tzinfo=UTC)
+
+
+def test_reauth_in_managed_workspace_restores_old_secret_when_metadata_save_fails() -> None:
+    page = object()
+
+    class FakeBrowserClient:
+        def capture_existing_session(self, page_arg, *, existing_email: str) -> RegistrationResult:
+            assert page_arg is page
+            return RegistrationResult(
+                email=existing_email,
+                secret=SessionSecret(session_token="new", csrf_token="new"),
+                captured_at=datetime(2026, 4, 17, 12, 0, tzinfo=UTC),
+            )
+
+    class FakeSecretStore:
+        def __init__(self) -> None:
+            self.values = {
+                "switchgpt_account_0": SessionSecret(session_token="old", csrf_token="old")
+            }
+
+        def read(self, key):
+            return self.values[key]
+
+        def replace(self, key, secret):
+            self.values[key] = secret
+
+    class FakeAccountStore:
+        def get_record(self, index: int) -> AccountRecord:
+            return AccountRecord(
+                index=0,
+                email="account1@example.com",
+                keychain_key="switchgpt_account_0",
+                registered_at=datetime(2026, 4, 16, 8, 30, tzinfo=UTC),
+                last_reauth_at=datetime(2026, 4, 16, 8, 30, tzinfo=UTC),
+                last_validated_at=datetime(2026, 4, 16, 8, 30, tzinfo=UTC),
+                status=AccountState.NEEDS_REAUTH,
+                last_error="expired session",
+            )
+
+        def save_record(self, record) -> None:
+            raise RuntimeError("disk failure")
+
+    service = RegistrationService(FakeAccountStore(), FakeSecretStore(), FakeBrowserClient())
+
+    with pytest.raises(RuntimeError, match="disk failure"):
+        service.reauth_in_managed_workspace(index=0, page=page)
+
+    assert service._secret_store.values["switchgpt_account_0"] == SessionSecret(
+        session_token="old",
+        csrf_token="old",
+    )
+
+
 def test_browser_client_requires_visible_browser_when_register_called() -> None:
     client = BrowserRegistrationClient(base_url="https://chatgpt.com")
     with pytest.raises(RuntimeError):
