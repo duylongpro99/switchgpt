@@ -1,17 +1,10 @@
-import platform
-
 import typer
 
-from .account_store import AccountStore
-from .config import Settings, ensure_supported_platform
+from . import bootstrap
+from .config import ensure_supported_platform
 from .errors import SwitchGptError
-from .doctor_service import DoctorService
-from .managed_browser import ManagedBrowser
-from .playwright_client import BrowserRegistrationClient
+from .output import render_doctor_report, render_settings_items, render_status_summary
 from .registration import RegistrationService
-from .secret_store import KeychainSecretStore
-from .status_service import StatusService
-from .switch_history import SwitchHistoryStore
 from .switch_service import SwitchService
 from .watch_service import WatchService
 
@@ -25,58 +18,37 @@ def main_command() -> None:
 
 
 def build_registration_service() -> RegistrationService:
-    settings = Settings.from_env()
-    store = AccountStore(settings.metadata_path, settings.slot_count)
-    secret_store = KeychainSecretStore(settings.keychain_service)
-    browser_client = BrowserRegistrationClient(base_url=settings.chatgpt_base_url)
-    return RegistrationService(store, secret_store, browser_client)
+    return bootstrap.build_registration_service()
 
 
-def build_status_service() -> tuple[AccountStore, StatusService]:
-    settings = Settings.from_env()
-    store = AccountStore(settings.metadata_path, settings.slot_count)
-    history_store = SwitchHistoryStore(settings.switch_history_path)
-    service = StatusService(
-        KeychainSecretStore(settings.keychain_service),
-        history_store=history_store,
-    )
-    return store, service
+def build_status_service():
+    return bootstrap.build_status_service()
 
 
-def build_doctor_service() -> DoctorService:
-    settings = Settings.from_env()
-    return DoctorService(
-        metadata_store=AccountStore(settings.metadata_path, settings.slot_count),
-        history_store=SwitchHistoryStore(settings.switch_history_path),
-        secret_store=KeychainSecretStore(settings.keychain_service),
-        managed_browser=build_managed_browser(),
-        platform_name=platform.system(),
+def build_doctor_service():
+    return bootstrap.build_doctor_service()
+
+
+def build_managed_browser():
+    return bootstrap.build_managed_browser()
+
+
+def _build_switch_components():
+    runtime = bootstrap.build_runtime()
+    return (
+        runtime.account_store,
+        runtime.secret_store,
+        runtime.managed_browser,
+        runtime.history_store,
     )
 
 
-def build_managed_browser() -> ManagedBrowser:
-    settings = Settings.from_env()
-    return ManagedBrowser(
-        base_url=settings.chatgpt_base_url,
-        profile_dir=settings.managed_profile_dir,
-    )
-
-
-def _build_switch_components() -> tuple[AccountStore, KeychainSecretStore, ManagedBrowser, SwitchHistoryStore]:
-    settings = Settings.from_env()
-    store = AccountStore(settings.metadata_path, settings.slot_count)
-    secret_store = KeychainSecretStore(settings.keychain_service)
-    managed_browser = build_managed_browser()
-    history_store = SwitchHistoryStore(settings.switch_history_path)
-    return store, secret_store, managed_browser, history_store
-
-
-def build_switch_service() -> SwitchService:
+def build_switch_service():
     store, secret_store, managed_browser, history_store = _build_switch_components()
     return SwitchService(store, secret_store, managed_browser, history_store)
 
 
-def build_watch_service() -> WatchService:
+def build_watch_service():
     store, secret_store, managed_browser, history_store = _build_switch_components()
     switch_service = SwitchService(store, secret_store, managed_browser, history_store)
     registration_service = build_registration_service()
@@ -93,10 +65,9 @@ def build_watch_service() -> WatchService:
 def paths() -> None:
     try:
         ensure_supported_platform()
-        settings = Settings.from_env()
-        for item in settings.describe_items():
-            print(f"{item.name}: {item.value} [{item.category}]")
-            print(f"  {item.description}")
+        runtime = bootstrap.build_runtime()
+        for line in render_settings_items(runtime.settings.describe_items()):
+            print(line)
     except SwitchGptError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
@@ -108,22 +79,14 @@ def status() -> None:
         ensure_supported_platform()
         store, service = build_status_service()
         snapshot = store.load()
-        if not snapshot.accounts:
-            print("No accounts registered.")
-            return
         summary = service.summarize(
             snapshot.accounts,
             active_account_index=snapshot.active_account_index,
         )
-        print(f"Readiness: {summary.readiness}")
-        if summary.active_account_index is not None:
-            print(f"Active slot: {summary.active_account_index}")
-        if summary.latest_result is not None:
-            print(f"Latest result: {summary.latest_result}")
-        if summary.next_action is not None:
-            print(f"Next action: {summary.next_action}")
-        for slot in summary.slots:
-            print(f"[{slot.index}] {slot.email} - {slot.state}")
+        if not snapshot.accounts:
+            print("No accounts registered.")
+        for line in render_status_summary(summary):
+            print(line)
     except SwitchGptError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
@@ -132,13 +95,9 @@ def status() -> None:
 @app.command()
 def doctor() -> None:
     try:
-        service = build_doctor_service()
-        report = service.run()
-        print(f"Readiness: {report.readiness}")
-        for check in report.checks:
-            print(f"{check.name}: {check.status} - {check.detail}")
-            if check.next_action:
-                print(f"next: {check.next_action}")
+        report = build_doctor_service().run()
+        for line in render_doctor_report(report):
+            print(line)
     except SwitchGptError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc

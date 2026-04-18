@@ -28,6 +28,34 @@ def test_paths_command_prints_config_runtime_and_secret_boundaries(
     assert "chatgpt_base_url: https://chatgpt.com [config]" in result.stdout
 
 
+def test_build_runtime_container_reuses_single_settings_snapshot(monkeypatch) -> None:
+    captured = {"calls": 0}
+
+    class FakeSettings:
+        metadata_path = "meta"
+        slot_count = 3
+        keychain_service = "switchgpt"
+        chatgpt_base_url = "https://chatgpt.com"
+        managed_profile_dir = "profile"
+        switch_history_path = "history"
+
+        def describe_items(self):
+            return []
+
+    def fake_from_env():
+        captured["calls"] += 1
+        return FakeSettings()
+
+    monkeypatch.setattr("switchgpt.bootstrap.Settings.from_env", fake_from_env)
+
+    from switchgpt.bootstrap import build_runtime
+
+    runtime = build_runtime()
+
+    assert captured["calls"] == 1
+    assert runtime.settings.chatgpt_base_url == "https://chatgpt.com"
+
+
 def test_status_command_is_registered() -> None:
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
@@ -94,6 +122,48 @@ def test_status_lists_registered_accounts(monkeypatch) -> None:
     assert "Latest result: needs-reauth" in result.stdout
     assert "Next action: Reauthenticate slot 0." in result.stdout
     assert "[0] account1@example.com - registered" in result.stdout
+
+
+def test_status_command_uses_rendered_output_lines(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
+    class FakeStore:
+        class Snapshot:
+            accounts = []
+            active_account_index = None
+            last_switch_at = None
+
+        def load(self):
+            return self.Snapshot()
+
+    class FakeStatusService:
+        def summarize(self, accounts, *, active_account_index):
+            return type(
+                "Summary",
+                (),
+                {
+                    "slots": [],
+                    "readiness": "ready",
+                    "latest_result": None,
+                    "next_action": None,
+                    "active_account_index": active_account_index,
+                },
+            )()
+
+    monkeypatch.setattr(
+        "switchgpt.cli.build_status_service",
+        lambda: (FakeStore(), FakeStatusService()),
+    )
+    monkeypatch.setattr(
+        "switchgpt.cli.render_status_summary",
+        lambda summary: ["Readiness: ready", "No registered slots."],
+    )
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    assert "Readiness: ready" in result.stdout
+    assert "No registered slots." in result.stdout
 
 
 def test_status_command_shows_account_store_error(monkeypatch, tmp_path) -> None:
