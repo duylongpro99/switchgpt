@@ -49,16 +49,7 @@ def build_switch_service():
 
 
 def build_watch_service():
-    store, secret_store, managed_browser, history_store = _build_switch_components()
-    switch_service = SwitchService(store, secret_store, managed_browser, history_store)
-    registration_service = build_registration_service()
-    return WatchService(
-        account_store=store,
-        managed_browser=managed_browser,
-        switch_service=switch_service,
-        registration_service=registration_service,
-        history_store=history_store,
-    )
+    return bootstrap.build_watch_service()
 
 
 @app.command()

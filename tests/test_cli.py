@@ -469,16 +469,30 @@ def test_build_watch_service_wires_registration_service(monkeypatch) -> None:
     secret_store = object()
     managed_browser = object()
     history_store = object()
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "account_store": store,
+            "secret_store": secret_store,
+            "managed_browser": managed_browser,
+            "history_store": history_store,
+        },
+    )()
     registration_service = object()
     captured = {}
 
     monkeypatch.setattr(
-        "switchgpt.cli._build_switch_components",
-        lambda: (store, secret_store, managed_browser, history_store),
+        "switchgpt.bootstrap.build_runtime",
+        lambda: runtime,
     )
+    def fake_build_registration_service(runtime_arg=None):
+        captured["registration_runtime"] = runtime_arg
+        return registration_service
+
     monkeypatch.setattr(
-        "switchgpt.cli.build_registration_service",
-        lambda: registration_service,
+        "switchgpt.bootstrap.build_registration_service",
+        fake_build_registration_service,
     )
 
     class FakeSwitchService:
@@ -508,10 +522,10 @@ def test_build_watch_service_wires_registration_service(monkeypatch) -> None:
                 "history_store": history_store,
             }
 
-    monkeypatch.setattr("switchgpt.cli.SwitchService", FakeSwitchService)
-    monkeypatch.setattr("switchgpt.cli.WatchService", FakeWatchService)
+    monkeypatch.setattr("switchgpt.bootstrap.SwitchService", FakeSwitchService)
+    monkeypatch.setattr("switchgpt.bootstrap.WatchService", FakeWatchService)
 
-    from switchgpt.cli import build_watch_service
+    from switchgpt.bootstrap import build_watch_service
 
     build_watch_service()
 
@@ -521,6 +535,7 @@ def test_build_watch_service_wires_registration_service(monkeypatch) -> None:
         managed_browser,
         history_store,
     )
+    assert captured["registration_runtime"] is runtime
     assert captured["watch_args"]["account_store"] is store
     assert captured["watch_args"]["managed_browser"] is managed_browser
     assert captured["watch_args"]["registration_service"] is registration_service
