@@ -276,6 +276,7 @@ class WatchService:
         target_index: int,
         message: str,
     ) -> None:
+        message = redact_text(message) or message
         self._history_store.append(
             SwitchEvent(
                 occurred_at=datetime.now(UTC),

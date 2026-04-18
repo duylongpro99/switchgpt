@@ -375,7 +375,10 @@ def test_run_records_reauth_failure_and_stops_on_runtime_failure_during_reauth()
 
 
 def test_run_records_reauth_failure_and_tries_next_candidate_when_capture_fails() -> None:
-    managed_browser = FakeManagedBrowser(detections=[LimitState.LIMIT_DETECTED])
+    managed_browser = FakeManagedBrowser(
+        detections=[LimitState.LIMIT_DETECTED],
+        wait_for_reauthentication_error=RuntimeError("cookie=session_cookie_value"),
+    )
     switch_service = FakeSwitchService(
         failures={1: ReauthRequiredError("Account slot 1 likely needs reauthentication.")}
     )
@@ -403,7 +406,10 @@ def test_run_records_reauth_failure_and_tries_next_candidate_when_capture_fails(
     )
 
     assert result.active_account_index == 2
-    assert any(event.result == "reauth-failed" for event in history_store.events)
+    reauth_failed_event = next(
+        event for event in history_store.events if event.result == "reauth-failed"
+    )
+    assert reauth_failed_event.message == "cookie=[redacted]"
 
 
 def test_run_marks_missing_registration_service_as_reauth_failure() -> None:
