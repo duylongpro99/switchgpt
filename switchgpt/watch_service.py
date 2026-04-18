@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import time
 
+from .diagnostics import DiagnosticEvent
 from .errors import ManagedBrowserError, ReauthRequiredError, SwitchError
 from .models import LimitState
 from .switch_history import SwitchEvent
@@ -11,6 +12,7 @@ from .switch_history import SwitchEvent
 class WatchNotification:
     kind: str
     message: str
+    event: DiagnosticEvent
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,7 @@ class WatchService:
                     notify,
                     "limit-detected",
                     "Usage limit detected. Switching immediately.",
+                    account_index=active_index,
                 )
                 snapshot = self._account_store.load()
                 candidates = [
@@ -135,6 +138,7 @@ class WatchService:
                         notify,
                         "switch-succeeded",
                         f"Switched to slot {active_index}.",
+                        account_index=active_index,
                     )
                     break
                 else:
@@ -163,9 +167,27 @@ class WatchService:
             except KeyboardInterrupt:
                 return self._finish_user_interrupted(notify, active_index)
 
-    def _emit(self, notify, kind: str, message: str) -> None:
+    def _emit(
+        self,
+        notify,
+        kind: str,
+        message: str,
+        *,
+        account_index: int | None = None,
+    ) -> None:
         if notify is not None:
-            notify(WatchNotification(kind=kind, message=message))
+            notify(
+                WatchNotification(
+                    kind=kind,
+                    message=message,
+                    event=DiagnosticEvent(
+                        subsystem="watch",
+                        result=kind,
+                        message=message,
+                        account_index=account_index,
+                    ),
+                )
+            )
 
     def _finish_browser_runtime_failure(
         self, notify, active_index: int | None

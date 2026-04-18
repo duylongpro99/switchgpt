@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory
 
+from .diagnostics import redact_text
 from .errors import AccountStoreError, SecretStoreError, SwitchHistoryError
 
 
@@ -138,7 +139,7 @@ class DoctorService:
             return DoctorCheck(
                 "managed-browser",
                 "fail",
-                str(exc),
+                redact_text(str(exc)),
                 "Run `switchgpt open` after repairing Playwright/browser prerequisites.",
             )
         if not can_open:

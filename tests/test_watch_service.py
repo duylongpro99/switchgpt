@@ -532,3 +532,24 @@ def test_run_returns_browser_runtime_failure_when_initial_runtime_setup_fails() 
     assert result.active_account_index == 0
     assert notifications[-1].kind == "browser-runtime-failure"
     assert history_store.events[-1].result == "browser-runtime-failure"
+
+
+def test_notifications_include_structured_diagnostic_event_payload() -> None:
+    notifications = []
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        managed_browser=FakeManagedBrowser(detections=[LimitState.LIMIT_DETECTED]),
+        switch_service=FakeSwitchService(),
+        history_store=FakeHistoryStore(),
+        poll_interval_seconds=0.0,
+    )
+
+    service.run(notify=notifications.append, sleep_fn=lambda _: None, stop_after_cycles=1)
+
+    first_limit_event = next(item for item in notifications if item.kind == "limit-detected")
+    assert first_limit_event.event.subsystem == "watch"
+    assert first_limit_event.event.result == "limit-detected"
+    assert first_limit_event.message == "Usage limit detected. Switching immediately."

@@ -190,3 +190,22 @@ def test_run_reports_managed_browser_failure_cleanly() -> None:
     runtime_check = next(check for check in report.checks if check.name == "managed-browser")
     assert runtime_check.status == "fail"
     assert report.readiness == "needs-attention"
+
+
+def test_run_redacts_sensitive_runtime_failure_detail() -> None:
+    class BrokenManagedBrowser:
+        def can_open_workspace(self, **kwargs) -> bool:
+            raise RuntimeError("cookie=abc123 blocked browser startup")
+
+    service = DoctorService(
+        metadata_store=type("Store", (), {"load": lambda self: Snapshot([])})(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
+        managed_browser=BrokenManagedBrowser(),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    runtime_check = next(check for check in report.checks if check.name == "managed-browser")
+    assert runtime_check.detail == "cookie=[redacted] blocked browser startup"
