@@ -22,3 +22,7 @@ switchgpt = "switchgpt.cli:main"
 
 [tool.setuptools]
 packages = ["switchgpt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
