@@ -129,8 +129,19 @@ def test_status_command_uses_rendered_output_lines(monkeypatch) -> None:
 
     class FakeStore:
         class Snapshot:
-            accounts = []
-            active_account_index = None
+            accounts = [
+                type(
+                    "Account",
+                    (),
+                    {
+                        "index": 0,
+                        "email": "account1@example.com",
+                        "keychain_key": "switchgpt_account_0",
+                        "last_error": None,
+                    },
+                )()
+            ]
+            active_account_index = 0
             last_switch_at = None
 
         def load(self):
@@ -156,14 +167,14 @@ def test_status_command_uses_rendered_output_lines(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "switchgpt.cli.render_status_summary",
-        lambda summary: ["Readiness: ready", "No registered slots."],
+        lambda summary: ["Readiness: ready", "rendered-summary"],
     )
 
     result = runner.invoke(app, ["status"])
 
     assert result.exit_code == 0
     assert "Readiness: ready" in result.stdout
-    assert "No registered slots." in result.stdout
+    assert "rendered-summary" in result.stdout
 
 
 def test_status_command_shows_account_store_error(monkeypatch, tmp_path) -> None:

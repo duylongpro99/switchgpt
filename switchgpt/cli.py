@@ -79,12 +79,13 @@ def status() -> None:
         ensure_supported_platform()
         store, service = build_status_service()
         snapshot = store.load()
+        if not snapshot.accounts:
+            print("No accounts registered.")
+            return
         summary = service.summarize(
             snapshot.accounts,
             active_account_index=snapshot.active_account_index,
         )
-        if not snapshot.accounts:
-            print("No accounts registered.")
         for line in render_status_summary(summary):
             print(line)
     except SwitchGptError as exc:
