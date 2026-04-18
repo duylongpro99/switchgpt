@@ -338,3 +338,38 @@ def test_auto_target_metadata_load_failure_records_failure_history_without_targe
     assert service._history_store.events[-1].to_account_index is None
     assert service._history_store.events[-1].result == "failure"
     assert service._history_store.events[-1].message == "metadata load failed"
+
+
+def test_failure_history_message_is_redacted_before_persistence() -> None:
+    class FailingManagedBrowser(FakeManagedBrowser):
+        def prepare_switch(
+            self,
+            context,
+            page,
+            *,
+            session_token: str,
+            csrf_token: str | None,
+        ) -> None:
+            raise SwitchError(
+                "prepare_switch failed with session_token=abc123 csrf_token=def456"
+            )
+
+    history_store = FakeHistoryStore()
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        secret_store=FakeSecretStore(
+            SessionSecret(session_token="session-2", csrf_token="csrf-2")
+        ),
+        managed_browser=FailingManagedBrowser(authenticated=True),
+        history_store=history_store,
+    )
+
+    with pytest.raises(SwitchError, match="prepare_switch failed"):
+        service.switch_to(index=1)
+
+    assert history_store.events[-1].message == (
+        "prepare_switch failed with session_token=[redacted] csrf_token=[redacted]"
+    )

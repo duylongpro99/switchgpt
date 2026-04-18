@@ -375,7 +375,10 @@ def test_run_records_reauth_failure_and_stops_on_runtime_failure_during_reauth()
 
 
 def test_run_records_reauth_failure_and_tries_next_candidate_when_capture_fails() -> None:
-    managed_browser = FakeManagedBrowser(detections=[LimitState.LIMIT_DETECTED])
+    managed_browser = FakeManagedBrowser(
+        detections=[LimitState.LIMIT_DETECTED],
+        wait_for_reauthentication_error=RuntimeError("cookie=session_cookie_value"),
+    )
     switch_service = FakeSwitchService(
         failures={1: ReauthRequiredError("Account slot 1 likely needs reauthentication.")}
     )
@@ -403,7 +406,10 @@ def test_run_records_reauth_failure_and_tries_next_candidate_when_capture_fails(
     )
 
     assert result.active_account_index == 2
-    assert any(event.result == "reauth-failed" for event in history_store.events)
+    reauth_failed_event = next(
+        event for event in history_store.events if event.result == "reauth-failed"
+    )
+    assert reauth_failed_event.message == "cookie=[redacted]"
 
 
 def test_run_marks_missing_registration_service_as_reauth_failure() -> None:
@@ -532,3 +538,50 @@ def test_run_returns_browser_runtime_failure_when_initial_runtime_setup_fails() 
     assert result.active_account_index == 0
     assert notifications[-1].kind == "browser-runtime-failure"
     assert history_store.events[-1].result == "browser-runtime-failure"
+
+
+def test_notifications_include_structured_diagnostic_event_payload() -> None:
+    notifications = []
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        managed_browser=FakeManagedBrowser(detections=[LimitState.LIMIT_DETECTED]),
+        switch_service=FakeSwitchService(),
+        history_store=FakeHistoryStore(),
+        poll_interval_seconds=0.0,
+    )
+
+    service.run(notify=notifications.append, sleep_fn=lambda _: None, stop_after_cycles=1)
+
+    first_limit_event = next(item for item in notifications if item.kind == "limit-detected")
+    assert first_limit_event.event.subsystem == "watch"
+    assert first_limit_event.event.result == "limit-detected"
+    assert first_limit_event.message == "Usage limit detected. Switching immediately."
+
+
+def test_notifications_redact_sensitive_exception_detail() -> None:
+    notifications = []
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        managed_browser=FakeManagedBrowser(
+            detections=[LimitState.LIMIT_DETECTED],
+        ),
+        switch_service=FakeSwitchService(
+            failures={
+                1: SwitchError("prepare_switch failed with cookie=abc123"),
+            }
+        ),
+        history_store=FakeHistoryStore(),
+        poll_interval_seconds=0.0,
+    )
+
+    service.run(notify=notifications.append, sleep_fn=lambda _: None, stop_after_cycles=1)
+
+    exhausted_event = next(item for item in notifications if item.kind == "account-exhausted-for-run")
+    assert exhausted_event.message == "prepare_switch failed with cookie=[redacted]"
+    assert exhausted_event.event.message == "prepare_switch failed with cookie=[redacted]"

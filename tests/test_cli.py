@@ -12,6 +12,50 @@ from datetime import UTC, datetime
 runner = CliRunner()
 
 
+def test_paths_command_prints_config_runtime_and_secret_boundaries(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
+    result = runner.invoke(app, ["paths"])
+
+    assert result.exit_code == 0
+    assert "data_dir:" in result.stdout
+    assert "[runtime-state]" in result.stdout
+    assert "keychain_service: switchgpt [secret-store]" in result.stdout
+    assert "chatgpt_base_url: https://chatgpt.com [config]" in result.stdout
+
+
+def test_build_runtime_container_reuses_single_settings_snapshot(monkeypatch) -> None:
+    captured = {"calls": 0}
+
+    class FakeSettings:
+        metadata_path = "meta"
+        slot_count = 3
+        keychain_service = "switchgpt"
+        chatgpt_base_url = "https://chatgpt.com"
+        managed_profile_dir = "profile"
+        switch_history_path = "history"
+
+        def describe_items(self):
+            return []
+
+    def fake_from_env():
+        captured["calls"] += 1
+        return FakeSettings()
+
+    monkeypatch.setattr("switchgpt.bootstrap.Settings.from_env", fake_from_env)
+
+    from switchgpt.bootstrap import build_runtime
+
+    runtime = build_runtime()
+
+    assert captured["calls"] == 1
+    assert runtime.settings.chatgpt_base_url == "https://chatgpt.com"
+
+
 def test_status_command_is_registered() -> None:
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
@@ -78,6 +122,59 @@ def test_status_lists_registered_accounts(monkeypatch) -> None:
     assert "Latest result: needs-reauth" in result.stdout
     assert "Next action: Reauthenticate slot 0." in result.stdout
     assert "[0] account1@example.com - registered" in result.stdout
+
+
+def test_status_command_uses_rendered_output_lines(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
+    class FakeStore:
+        class Snapshot:
+            accounts = [
+                type(
+                    "Account",
+                    (),
+                    {
+                        "index": 0,
+                        "email": "account1@example.com",
+                        "keychain_key": "switchgpt_account_0",
+                        "last_error": None,
+                    },
+                )()
+            ]
+            active_account_index = 0
+            last_switch_at = None
+
+        def load(self):
+            return self.Snapshot()
+
+    class FakeStatusService:
+        def summarize(self, accounts, *, active_account_index):
+            return type(
+                "Summary",
+                (),
+                {
+                    "slots": [],
+                    "readiness": "ready",
+                    "latest_result": None,
+                    "next_action": None,
+                    "active_account_index": active_account_index,
+                },
+            )()
+
+    monkeypatch.setattr(
+        "switchgpt.cli.build_status_service",
+        lambda: (FakeStore(), FakeStatusService()),
+    )
+    monkeypatch.setattr(
+        "switchgpt.cli.render_status_summary",
+        lambda summary: ["Readiness: ready", "rendered-summary"],
+    )
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    assert "Readiness: ready" in result.stdout
+    assert "rendered-summary" in result.stdout
 
 
 def test_status_command_shows_account_store_error(monkeypatch, tmp_path) -> None:
@@ -372,16 +469,30 @@ def test_build_watch_service_wires_registration_service(monkeypatch) -> None:
     secret_store = object()
     managed_browser = object()
     history_store = object()
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "account_store": store,
+            "secret_store": secret_store,
+            "managed_browser": managed_browser,
+            "history_store": history_store,
+        },
+    )()
     registration_service = object()
     captured = {}
 
     monkeypatch.setattr(
-        "switchgpt.cli._build_switch_components",
-        lambda: (store, secret_store, managed_browser, history_store),
+        "switchgpt.bootstrap.build_runtime",
+        lambda: runtime,
     )
+    def fake_build_registration_service(runtime_arg=None):
+        captured["registration_runtime"] = runtime_arg
+        return registration_service
+
     monkeypatch.setattr(
-        "switchgpt.cli.build_registration_service",
-        lambda: registration_service,
+        "switchgpt.bootstrap.build_registration_service",
+        fake_build_registration_service,
     )
 
     class FakeSwitchService:
@@ -411,10 +522,10 @@ def test_build_watch_service_wires_registration_service(monkeypatch) -> None:
                 "history_store": history_store,
             }
 
-    monkeypatch.setattr("switchgpt.cli.SwitchService", FakeSwitchService)
-    monkeypatch.setattr("switchgpt.cli.WatchService", FakeWatchService)
+    monkeypatch.setattr("switchgpt.bootstrap.SwitchService", FakeSwitchService)
+    monkeypatch.setattr("switchgpt.bootstrap.WatchService", FakeWatchService)
 
-    from switchgpt.cli import build_watch_service
+    from switchgpt.bootstrap import build_watch_service
 
     build_watch_service()
 
@@ -424,6 +535,7 @@ def test_build_watch_service_wires_registration_service(monkeypatch) -> None:
         managed_browser,
         history_store,
     )
+    assert captured["registration_runtime"] is runtime
     assert captured["watch_args"]["account_store"] is store
     assert captured["watch_args"]["managed_browser"] is managed_browser
     assert captured["watch_args"]["registration_service"] is registration_service

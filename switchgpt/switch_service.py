@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from .diagnostics import redact_text
 from .errors import ReauthRequiredError, SwitchError
 from .switch_history import SwitchEvent
 
@@ -143,6 +144,6 @@ class SwitchService:
                 to_account_index=account_index,
                 mode=mode,
                 result=result,
-                message=message,
+                message=redact_text(message) if message is not None else None,
             )
         )
