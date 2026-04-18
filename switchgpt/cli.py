@@ -88,6 +88,20 @@ def build_watch_service() -> WatchService:
         history_store=history_store,
     )
 
+
+@app.command()
+def paths() -> None:
+    try:
+        ensure_supported_platform()
+        settings = Settings.from_env()
+        for item in settings.describe_items():
+            print(f"{item.name}: {item.value} [{item.category}]")
+            print(f"  {item.description}")
+    except SwitchGptError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+
 @app.command()
 def status() -> None:
     try:

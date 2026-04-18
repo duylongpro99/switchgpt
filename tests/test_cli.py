@@ -12,6 +12,22 @@ from datetime import UTC, datetime
 runner = CliRunner()
 
 
+def test_paths_command_prints_config_runtime_and_secret_boundaries(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
+    result = runner.invoke(app, ["paths"])
+
+    assert result.exit_code == 0
+    assert "data_dir:" in result.stdout
+    assert "[runtime-state]" in result.stdout
+    assert "keychain_service: switchgpt [secret-store]" in result.stdout
+    assert "chatgpt_base_url: https://chatgpt.com [config]" in result.stdout
+
+
 def test_status_command_is_registered() -> None:
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
