@@ -192,6 +192,25 @@ def test_run_reports_managed_browser_failure_cleanly() -> None:
     assert report.readiness == "needs-attention"
 
 
+def test_run_uses_fallback_detail_when_runtime_exception_is_empty() -> None:
+    class BrokenManagedBrowser:
+        def can_open_workspace(self, **kwargs) -> bool:
+            raise RuntimeError("")
+
+    service = DoctorService(
+        metadata_store=type("Store", (), {"load": lambda self: Snapshot([])})(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
+        managed_browser=BrokenManagedBrowser(),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    runtime_check = next(check for check in report.checks if check.name == "managed-browser")
+    assert runtime_check.detail == "Managed browser probe failed."
+
+
 def test_run_redacts_sensitive_runtime_failure_detail() -> None:
     class BrokenManagedBrowser:
         def can_open_workspace(self, **kwargs) -> bool:

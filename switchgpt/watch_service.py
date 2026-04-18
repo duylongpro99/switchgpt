@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import time
 
-from .diagnostics import DiagnosticEvent
+from .diagnostics import DiagnosticEvent, redact_text
 from .errors import ManagedBrowserError, ReauthRequiredError, SwitchError
 from .models import LimitState
 from .switch_history import SwitchEvent
@@ -176,6 +176,7 @@ class WatchService:
         account_index: int | None = None,
     ) -> None:
         if notify is not None:
+            message = redact_text(message) or message
             notify(
                 WatchNotification(
                     kind=kind,

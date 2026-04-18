@@ -136,10 +136,13 @@ class DoctorService:
                     headless=True,
                 )
         except Exception as exc:
+            detail = redact_text(str(exc))
+            if not detail:
+                detail = "Managed browser probe failed."
             return DoctorCheck(
                 "managed-browser",
                 "fail",
-                redact_text(str(exc)),
+                detail,
                 "Run `switchgpt open` after repairing Playwright/browser prerequisites.",
             )
         if not can_open:
