@@ -574,6 +574,29 @@ def test_add_command_reports_registered_slot(monkeypatch) -> None:
     assert "Registered account1@example.com in slot 0." in result.stdout
 
 
+def test_add_command_exits_non_zero_on_strict_codex_sync_failure_with_repair_hint(
+    monkeypatch,
+) -> None:
+    class FakeRegistrationService:
+        def add(self):
+            raise CodexAuthSyncFailedError(
+                "Codex auth sync failed after registration update.",
+                failure_class="codex-auth-fallback-failed",
+            )
+
+    monkeypatch.setattr(
+        "switchgpt.cli.build_registration_service",
+        lambda: FakeRegistrationService(),
+    )
+
+    result = runner.invoke(app, ["add"])
+
+    assert result.exit_code == 1
+    assert "Codex auth sync failed after registration update." in result.stderr
+    assert "switchgpt codex-sync" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_add_command_from_open_captures_managed_workspace_session(monkeypatch) -> None:
     page = object()
     events: list[str] = []
@@ -1080,6 +1103,35 @@ def test_watch_command_exits_non_zero_on_exhaustion(monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert "No eligible registered account remains for automatic switching." in result.stdout
+
+
+def test_watch_command_exits_non_zero_on_codex_sync_failure_with_repair_guidance(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
+    class FakeWatchService:
+        def run(self, *, notify, sleep_fn=None, stop_after_cycles=None):
+            notify(
+                type(
+                    "Event",
+                    (),
+                    {"message": "Codex auth sync failed after switch."},
+                )()
+            )
+            return type(
+                "Result",
+                (),
+                {"exit_code": 1, "reason": "codex-sync-failed"},
+            )()
+
+    monkeypatch.setattr("switchgpt.cli.build_watch_service", lambda: FakeWatchService())
+
+    result = runner.invoke(app, ["watch"])
+
+    assert result.exit_code == 1
+    assert "Codex auth sync failed after switch." in result.stdout
+    assert "switchgpt codex-sync" in (result.stdout + result.stderr)
 
 
 def test_watch_command_prints_reauth_and_resume_messages(monkeypatch) -> None:
