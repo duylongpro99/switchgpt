@@ -15,7 +15,14 @@ class AccountStore:
     def load(self) -> AccountSnapshot:
         if not self._metadata_path.exists():
             return AccountSnapshot(
-                accounts=[], active_account_index=None, last_switch_at=None
+                accounts=[],
+                active_account_index=None,
+                last_switch_at=None,
+                last_codex_sync_at=None,
+                last_codex_sync_slot=None,
+                last_codex_sync_method=None,
+                last_codex_sync_status=None,
+                last_codex_sync_error=None,
             )
         try:
             raw_text = self._metadata_path.read_text()
@@ -35,6 +42,17 @@ class AccountStore:
                 accounts=accounts,
                 active_account_index=self._load_active_account_index(payload),
                 last_switch_at=self._load_last_switch_at(payload),
+                last_codex_sync_at=self._load_last_codex_sync_at(payload),
+                last_codex_sync_slot=self._load_last_codex_sync_slot(payload),
+                last_codex_sync_method=self._load_optional_str(
+                    payload, "last_codex_sync_method"
+                ),
+                last_codex_sync_status=self._load_optional_str(
+                    payload, "last_codex_sync_status"
+                ),
+                last_codex_sync_error=self._load_optional_str(
+                    payload, "last_codex_sync_error"
+                ),
             )
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise AccountStoreError("Malformed account metadata.") from exc
@@ -78,6 +96,27 @@ class AccountStore:
         last_switch_at_text = self._require_str(last_switch_at)
         return datetime.fromisoformat(last_switch_at_text)
 
+    def _load_last_codex_sync_at(self, payload: dict[str, object]) -> datetime | None:
+        last_codex_sync_at = payload.get("last_codex_sync_at")
+        if last_codex_sync_at is None:
+            return None
+        last_codex_sync_at_text = self._require_str(last_codex_sync_at)
+        return datetime.fromisoformat(last_codex_sync_at_text)
+
+    def _load_last_codex_sync_slot(self, payload: dict[str, object]) -> int | None:
+        last_codex_sync_slot = payload.get("last_codex_sync_slot")
+        if last_codex_sync_slot is None:
+            return None
+        return self._require_int(last_codex_sync_slot)
+
+    def _load_optional_str(
+        self, payload: dict[str, object], key: str
+    ) -> str | None:
+        value = payload.get(key)
+        if value is None:
+            return None
+        return self._require_str(value)
+
     @staticmethod
     def _require_int(value: object) -> int:
         if type(value) is not int:
@@ -113,6 +152,11 @@ class AccountStore:
                 accounts=sorted(accounts, key=lambda item: item.index),
                 active_account_index=snapshot.active_account_index,
                 last_switch_at=snapshot.last_switch_at,
+                last_codex_sync_at=snapshot.last_codex_sync_at,
+                last_codex_sync_slot=snapshot.last_codex_sync_slot,
+                last_codex_sync_method=snapshot.last_codex_sync_method,
+                last_codex_sync_status=snapshot.last_codex_sync_status,
+                last_codex_sync_error=snapshot.last_codex_sync_error,
             )
         )
 
@@ -125,6 +169,33 @@ class AccountStore:
                 accounts=snapshot.accounts,
                 active_account_index=active_account_index,
                 last_switch_at=switched_at,
+                last_codex_sync_at=snapshot.last_codex_sync_at,
+                last_codex_sync_slot=snapshot.last_codex_sync_slot,
+                last_codex_sync_method=snapshot.last_codex_sync_method,
+                last_codex_sync_status=snapshot.last_codex_sync_status,
+                last_codex_sync_error=snapshot.last_codex_sync_error,
+            )
+        )
+
+    def save_codex_sync_state(
+        self,
+        synced_at: datetime | None,
+        synced_slot: int | None,
+        method: str | None,
+        status: str | None,
+        error: str | None,
+    ) -> None:
+        snapshot = self.load()
+        self._write_snapshot(
+            AccountSnapshot(
+                accounts=snapshot.accounts,
+                active_account_index=snapshot.active_account_index,
+                last_switch_at=snapshot.last_switch_at,
+                last_codex_sync_at=synced_at,
+                last_codex_sync_slot=synced_slot,
+                last_codex_sync_method=method,
+                last_codex_sync_status=status,
+                last_codex_sync_error=error,
             )
         )
 
@@ -137,6 +208,15 @@ class AccountStore:
                 if snapshot.last_switch_at is not None
                 else None
             ),
+            "last_codex_sync_at": (
+                snapshot.last_codex_sync_at.isoformat()
+                if snapshot.last_codex_sync_at is not None
+                else None
+            ),
+            "last_codex_sync_slot": snapshot.last_codex_sync_slot,
+            "last_codex_sync_method": snapshot.last_codex_sync_method,
+            "last_codex_sync_status": snapshot.last_codex_sync_status,
+            "last_codex_sync_error": snapshot.last_codex_sync_error,
             "accounts": [
                 {
                     **asdict(account),

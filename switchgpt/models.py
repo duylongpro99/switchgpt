@@ -34,3 +34,8 @@ class AccountSnapshot:
     accounts: list[AccountRecord]
     active_account_index: int | None
     last_switch_at: datetime | None
+    last_codex_sync_at: datetime | None
+    last_codex_sync_slot: int | None
+    last_codex_sync_method: str | None
+    last_codex_sync_status: str | None
+    last_codex_sync_error: str | None

@@ -14,8 +14,30 @@ def test_load_returns_empty_snapshot_with_phase_2_top_level_fields(tmp_path) -> 
     snapshot = store.load()
 
     assert snapshot == AccountSnapshot(
-        accounts=[], active_account_index=None, last_switch_at=None
+        accounts=[],
+        active_account_index=None,
+        last_switch_at=None,
+        last_codex_sync_at=None,
+        last_codex_sync_slot=None,
+        last_codex_sync_method=None,
+        last_codex_sync_status=None,
+        last_codex_sync_error=None,
     )
+
+
+def test_load_defaults_codex_sync_metadata_when_missing(tmp_path) -> None:
+    metadata_path = tmp_path / "accounts.json"
+    metadata_path.write_text(json.dumps({"version": 1, "accounts": []}))
+
+    store = AccountStore(metadata_path, slot_count=3)
+
+    snapshot = store.load()
+
+    assert snapshot.last_codex_sync_at is None
+    assert snapshot.last_codex_sync_slot is None
+    assert snapshot.last_codex_sync_method is None
+    assert snapshot.last_codex_sync_status is None
+    assert snapshot.last_codex_sync_error is None
 
 
 def test_save_active_account_round_trips_with_registered_accounts(tmp_path) -> None:
@@ -39,6 +61,27 @@ def test_save_active_account_round_trips_with_registered_accounts(tmp_path) -> N
 
     assert snapshot.active_account_index == 0
     assert snapshot.last_switch_at == recorded_at
+
+
+def test_save_codex_sync_state_persists_non_secret_sync_fields(tmp_path) -> None:
+    store = AccountStore(tmp_path / "accounts.json", slot_count=3)
+    synced_at = datetime(2026, 4, 19, 9, 30, tzinfo=UTC)
+
+    store.save_codex_sync_state(
+        synced_at=synced_at,
+        synced_slot=1,
+        method="env-fallback",
+        status="fallback-ok",
+        error="codex-auth-format-unsupported",
+    )
+
+    snapshot = store.load()
+
+    assert snapshot.last_codex_sync_at == synced_at
+    assert snapshot.last_codex_sync_slot == 1
+    assert snapshot.last_codex_sync_method == "env-fallback"
+    assert snapshot.last_codex_sync_status == "fallback-ok"
+    assert snapshot.last_codex_sync_error == "codex-auth-format-unsupported"
 
 
 def test_allocate_next_empty_slot_returns_zero_for_empty_store(tmp_path) -> None:
