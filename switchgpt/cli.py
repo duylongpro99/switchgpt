@@ -5,6 +5,7 @@ from .config import ensure_supported_platform
 from .errors import SwitchGptError
 from .output import render_doctor_report, render_settings_items, render_status_summary
 from .registration import RegistrationService
+from .status_service import PersistedCodexSyncState
 from .switch_service import SwitchService
 from .watch_service import WatchService
 
@@ -69,6 +70,13 @@ def status() -> None:
         summary = service.summarize(
             snapshot.accounts,
             active_account_index=snapshot.active_account_index,
+            codex_sync_state=PersistedCodexSyncState(
+                synced_slot=getattr(snapshot, "last_codex_sync_slot", None),
+                status=getattr(snapshot, "last_codex_sync_status", None),
+                method=getattr(snapshot, "last_codex_sync_method", None),
+                synced_at=getattr(snapshot, "last_codex_sync_at", None),
+                error=getattr(snapshot, "last_codex_sync_error", None),
+            ),
         )
         for line in render_status_summary(summary):
             print(line)

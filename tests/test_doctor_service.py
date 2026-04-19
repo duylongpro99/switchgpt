@@ -15,10 +15,25 @@ class FakeManagedBrowser:
 
 
 class Snapshot:
-    def __init__(self, accounts) -> None:
+    def __init__(
+        self,
+        accounts,
+        *,
+        active_account_index=None,
+        last_codex_sync_slot=None,
+        last_codex_sync_status=None,
+        last_codex_sync_method=None,
+        last_codex_sync_at=None,
+        last_codex_sync_error=None,
+    ) -> None:
         self.accounts = accounts
-        self.active_account_index = None
+        self.active_account_index = active_account_index
         self.last_switch_at = datetime(2026, 4, 17, 12, 0, tzinfo=UTC)
+        self.last_codex_sync_slot = last_codex_sync_slot
+        self.last_codex_sync_status = last_codex_sync_status
+        self.last_codex_sync_method = last_codex_sync_method
+        self.last_codex_sync_at = last_codex_sync_at
+        self.last_codex_sync_error = last_codex_sync_error
 
 
 class Account:
@@ -228,3 +243,85 @@ def test_run_redacts_sensitive_runtime_failure_detail() -> None:
 
     runtime_check = next(check for check in report.checks if check.name == "managed-browser")
     assert runtime_check.detail == "cookie=[redacted] blocked browser startup"
+
+
+def test_run_includes_codex_sync_pass_when_no_active_slot() -> None:
+    service = DoctorService(
+        metadata_store=type("Store", (), {"load": lambda self: Snapshot([])})(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
+        managed_browser=FakeManagedBrowser(can_open=True),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    codex_sync_check = next(check for check in report.checks if check.name == "codex-sync")
+    assert codex_sync_check.status == "pass"
+    assert codex_sync_check.detail == "No active slot; Codex sync drift is not applicable."
+
+
+def test_run_warns_when_last_codex_sync_does_not_match_active_slot() -> None:
+    service = DoctorService(
+        metadata_store=type(
+            "Store",
+            (),
+            {
+                "load": lambda self: Snapshot(
+                    [Account("switchgpt_account_0")],
+                    active_account_index=0,
+                    last_codex_sync_slot=1,
+                    last_codex_sync_status="ok",
+                    last_codex_sync_method="file",
+                    last_codex_sync_at=datetime(2026, 4, 19, 9, 30, tzinfo=UTC),
+                )
+            },
+        )(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type(
+            "Secrets", (), {"exists": lambda self, key: key == "switchgpt_account_0"}
+        )(),
+        managed_browser=FakeManagedBrowser(can_open=True),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    codex_sync_check = next(check for check in report.checks if check.name == "codex-sync")
+    assert codex_sync_check.status == "warn"
+    assert "switchgpt codex-sync" in codex_sync_check.next_action
+    assert "doctor" in codex_sync_check.next_action
+    assert report.readiness == "needs-attention"
+
+
+def test_run_warns_when_last_codex_sync_failed_for_active_slot() -> None:
+    service = DoctorService(
+        metadata_store=type(
+            "Store",
+            (),
+            {
+                "load": lambda self: Snapshot(
+                    [Account("switchgpt_account_0")],
+                    active_account_index=0,
+                    last_codex_sync_slot=0,
+                    last_codex_sync_status="failed",
+                    last_codex_sync_method="env-fallback",
+                    last_codex_sync_at=datetime(2026, 4, 19, 9, 45, tzinfo=UTC),
+                    last_codex_sync_error="codex-auth-write-failed",
+                )
+            },
+        )(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type(
+            "Secrets", (), {"exists": lambda self, key: key == "switchgpt_account_0"}
+        )(),
+        managed_browser=FakeManagedBrowser(can_open=True),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    codex_sync_check = next(check for check in report.checks if check.name == "codex-sync")
+    assert codex_sync_check.status == "warn"
+    assert "failed" in codex_sync_check.detail
+    assert "switchgpt codex-sync" in codex_sync_check.next_action

@@ -5,6 +5,7 @@ from switchgpt.account_store import AccountStore
 from switchgpt.cli import app
 from switchgpt.errors import CodexAuthSyncFailedError, SwitchError
 from switchgpt.models import AccountRecord, AccountState
+from switchgpt.output import render_status_summary
 from switchgpt.registration import RegistrationService
 
 from datetime import UTC, datetime
@@ -251,7 +252,7 @@ def test_status_lists_registered_accounts(monkeypatch) -> None:
             return self.Snapshot()
 
     class FakeStatusService:
-        def summarize(self, accounts, *, active_account_index):
+        def summarize(self, accounts, *, active_account_index, codex_sync_state=None):
             return type(
                 "Summary",
                 (),
@@ -271,6 +272,7 @@ def test_status_lists_registered_accounts(monkeypatch) -> None:
                     "latest_result": "needs-reauth",
                     "next_action": "Reauthenticate slot 0.",
                     "active_account_index": active_account_index,
+                    "codex_sync": None,
                 },
             )()
 
@@ -311,7 +313,7 @@ def test_status_command_uses_rendered_output_lines(monkeypatch) -> None:
             return self.Snapshot()
 
     class FakeStatusService:
-        def summarize(self, accounts, *, active_account_index):
+        def summarize(self, accounts, *, active_account_index, codex_sync_state=None):
             return type(
                 "Summary",
                 (),
@@ -321,6 +323,7 @@ def test_status_command_uses_rendered_output_lines(monkeypatch) -> None:
                     "latest_result": None,
                     "next_action": None,
                     "active_account_index": active_account_index,
+                    "codex_sync": codex_sync_state,
                 },
             )()
 
@@ -338,6 +341,101 @@ def test_status_command_uses_rendered_output_lines(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Readiness: ready" in result.stdout
     assert "rendered-summary" in result.stdout
+
+
+def test_status_command_passes_persisted_codex_sync_metadata_to_summary(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+    captured: dict[str, object] = {}
+
+    class FakeStore:
+        class Snapshot:
+            accounts = [
+                type(
+                    "Account",
+                    (),
+                    {
+                        "index": 0,
+                        "email": "account1@example.com",
+                        "keychain_key": "switchgpt_account_0",
+                        "last_error": None,
+                    },
+                )()
+            ]
+            active_account_index = 0
+            last_switch_at = None
+            last_codex_sync_at = datetime(2026, 4, 19, 10, 15, tzinfo=UTC)
+            last_codex_sync_slot = 1
+            last_codex_sync_method = "file"
+            last_codex_sync_status = "ok"
+            last_codex_sync_error = None
+
+        def load(self):
+            return self.Snapshot()
+
+    class FakeStatusService:
+        def summarize(self, accounts, *, active_account_index, codex_sync_state):
+            captured["active_account_index"] = active_account_index
+            captured["accounts"] = accounts
+            captured["codex_sync_state"] = codex_sync_state
+            return type(
+                "Summary",
+                (),
+                {
+                    "slots": [],
+                    "readiness": "ready",
+                    "latest_result": None,
+                    "next_action": None,
+                    "active_account_index": active_account_index,
+                    "codex_sync": None,
+                },
+            )()
+
+    monkeypatch.setattr(
+        "switchgpt.cli.build_status_service",
+        lambda: (FakeStore(), FakeStatusService()),
+    )
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    codex_sync_state = captured["codex_sync_state"]
+    assert captured["active_account_index"] == 0
+    assert codex_sync_state.synced_slot == 1
+    assert codex_sync_state.status == "ok"
+    assert codex_sync_state.method == "file"
+    assert codex_sync_state.synced_at == datetime(2026, 4, 19, 10, 15, tzinfo=UTC)
+    assert codex_sync_state.error is None
+
+
+def test_render_status_summary_includes_codex_sync_lines() -> None:
+    summary = type(
+        "Summary",
+        (),
+        {
+            "slots": [],
+            "readiness": "degraded",
+            "latest_result": None,
+            "next_action": "Run `switchgpt codex-sync` and rerun status.",
+            "active_account_index": 0,
+            "codex_sync": type(
+                "CodexSyncStatus",
+                (),
+                {
+                    "state": "out-of-sync",
+                    "method": "env-fallback",
+                    "synced_at": datetime(2026, 4, 19, 10, 30, tzinfo=UTC),
+                    "error": "codex-auth-write-failed",
+                },
+            )(),
+        },
+    )()
+
+    lines = render_status_summary(summary)
+
+    assert "Codex sync: out-of-sync" in lines
+    assert "Codex sync method: env-fallback" in lines
+    assert "Codex sync at: 2026-04-19T10:30:00+00:00" in lines
+    assert "Codex sync error: codex-auth-write-failed" in lines
 
 
 def test_status_command_shows_account_store_error(monkeypatch, tmp_path) -> None:

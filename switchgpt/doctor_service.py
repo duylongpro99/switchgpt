@@ -41,6 +41,7 @@ class DoctorService:
             self._check_platform(),
             metadata_check,
             self._check_history(),
+            self._check_codex_sync(snapshot, metadata_check),
             self._check_keychain_entries(snapshot, metadata_check),
             self._check_runtime(),
         ]
@@ -91,6 +92,67 @@ class DoctorService:
                 "Repair or archive malformed switch history.",
             )
         return DoctorCheck("history", "pass", "Switch history is readable.", None)
+
+    def _check_codex_sync(self, snapshot, metadata_check: DoctorCheck) -> DoctorCheck:
+        if snapshot is None:
+            return DoctorCheck(
+                "codex-sync",
+                "fail",
+                metadata_check.detail,
+                metadata_check.next_action,
+            )
+
+        active_slot = getattr(snapshot, "active_account_index", None)
+        if active_slot is None:
+            return DoctorCheck(
+                "codex-sync",
+                "pass",
+                "No active slot; Codex sync drift is not applicable.",
+                None,
+            )
+
+        sync_slot = getattr(snapshot, "last_codex_sync_slot", None)
+        sync_status = getattr(snapshot, "last_codex_sync_status", None)
+        sync_method = getattr(snapshot, "last_codex_sync_method", None)
+        sync_at = getattr(snapshot, "last_codex_sync_at", None)
+        sync_error = redact_text(getattr(snapshot, "last_codex_sync_error", None) or "")
+        repair_action = (
+            "Run `switchgpt codex-sync` for the active slot, then rerun `switchgpt doctor`."
+        )
+
+        if sync_status in {"ok", "fallback-ok"} and sync_slot == active_slot:
+            method_suffix = f" via {sync_method}" if sync_method is not None else ""
+            time_suffix = f" at {sync_at.isoformat()}" if sync_at is not None else ""
+            return DoctorCheck(
+                "codex-sync",
+                "pass",
+                f"Active slot matches the last successful Codex sync{method_suffix}{time_suffix}.",
+                None,
+            )
+
+        if sync_status == "failed":
+            detail = f"Last Codex sync failed for active slot {active_slot}."
+            if sync_error:
+                detail = f"{detail} Error: {sync_error}"
+            return DoctorCheck("codex-sync", "warn", detail, repair_action)
+
+        if sync_slot is None or sync_status is None:
+            return DoctorCheck(
+                "codex-sync",
+                "warn",
+                f"No successful Codex sync recorded for active slot {active_slot}.",
+                repair_action,
+            )
+
+        return DoctorCheck(
+            "codex-sync",
+            "warn",
+            (
+                f"Active slot {active_slot} does not match the last Codex sync slot "
+                f"{sync_slot}."
+            ),
+            repair_action,
+        )
 
     def _check_keychain_entries(self, snapshot, metadata_check: DoctorCheck) -> DoctorCheck:
         if snapshot is None:

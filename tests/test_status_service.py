@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from switchgpt.secret_store import KeychainSecretStore
 from switchgpt.models import AccountRecord, AccountState
-from switchgpt.status_service import StatusService
+from switchgpt.status_service import PersistedCodexSyncState, StatusService
 
 
 class FakeSecretStore:
@@ -222,3 +222,45 @@ def test_summarize_prioritizes_history_invalid_guidance_over_missing_secret() ->
     assert summary.readiness == "degraded"
     assert summary.latest_result == "history-invalid"
     assert summary.next_action == "Repair or archive malformed switch history."
+
+
+def test_summarize_reports_codex_sync_drift_when_active_slot_mismatches_last_sync() -> None:
+    service = StatusService(secret_store=FakeSecretStore({"switchgpt_account_0"}))
+
+    summary = service.summarize(
+        [build_account(0)],
+        active_account_index=0,
+        codex_sync_state=PersistedCodexSyncState(
+            synced_slot=1,
+            status="ok",
+            method="file",
+            synced_at=datetime(2026, 4, 19, 9, 30, tzinfo=UTC),
+            error=None,
+        ),
+    )
+
+    assert summary.readiness == "degraded"
+    assert summary.codex_sync is not None
+    assert summary.codex_sync.state == "out-of-sync"
+    assert summary.codex_sync.method == "file"
+    assert summary.codex_sync.synced_at == datetime(2026, 4, 19, 9, 30, tzinfo=UTC)
+    assert summary.codex_sync.error is None
+    assert summary.next_action is not None
+    assert "switchgpt codex-sync" in summary.next_action
+
+
+def test_summarize_reports_codex_sync_no_data_when_sync_metadata_missing() -> None:
+    service = StatusService(secret_store=FakeSecretStore({"switchgpt_account_0"}))
+
+    summary = service.summarize(
+        [build_account(0)],
+        active_account_index=0,
+        codex_sync_state=None,
+    )
+
+    assert summary.readiness == "ready"
+    assert summary.codex_sync is not None
+    assert summary.codex_sync.state == "no-data"
+    assert summary.codex_sync.method is None
+    assert summary.codex_sync.synced_at is None
+    assert summary.codex_sync.error is None

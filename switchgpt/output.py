@@ -15,6 +15,14 @@ def render_status_summary(summary: StatusSummary) -> list[str]:
     lines = [f"Readiness: {summary.readiness}"]
     if summary.active_account_index is not None:
         lines.append(f"Active slot: {summary.active_account_index}")
+    if summary.codex_sync is not None:
+        lines.append(f"Codex sync: {summary.codex_sync.state}")
+        if summary.codex_sync.method is not None:
+            lines.append(f"Codex sync method: {summary.codex_sync.method}")
+        if summary.codex_sync.synced_at is not None:
+            lines.append(f"Codex sync at: {summary.codex_sync.synced_at.isoformat()}")
+        if summary.codex_sync.error is not None:
+            lines.append(f"Codex sync error: {summary.codex_sync.error}")
     if summary.latest_result is not None:
         lines.append(f"Latest result: {summary.latest_result}")
     if summary.next_action is not None:

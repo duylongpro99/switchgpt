@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 
 from .errors import SecretStoreError
 from .models import AccountRecord, AccountState
@@ -19,12 +20,30 @@ class StatusSummary:
     readiness: str
     latest_result: str | None
     next_action: str | None
+    codex_sync: "CodexSyncStatus | None"
 
 
 @dataclass(frozen=True)
 class HistoryStatus:
     result: str | None
     to_account_index: int | None
+
+
+@dataclass(frozen=True)
+class PersistedCodexSyncState:
+    synced_slot: int | None
+    status: str | None
+    method: str | None
+    synced_at: datetime | None
+    error: str | None
+
+
+@dataclass(frozen=True)
+class CodexSyncStatus:
+    state: str
+    method: str | None
+    synced_at: datetime | None
+    error: str | None
 
 
 class StatusService:
@@ -56,9 +75,14 @@ class StatusService:
         accounts: list[AccountRecord],
         *,
         active_account_index: int | None,
+        codex_sync_state: PersistedCodexSyncState | None = None,
     ) -> StatusSummary:
         slots = [self.classify(account) for account in accounts]
         history_status = self._history_status()
+        codex_sync = self._codex_sync_status(
+            active_account_index=active_account_index,
+            codex_sync_state=codex_sync_state,
+        )
         latest_result = history_status.result
         readiness = "ready"
         next_action = None
@@ -82,12 +106,11 @@ class StatusService:
                     f"Reauthenticate slot {needs_reauth_slot} with `switchgpt add --reauth "
                     f"{needs_reauth_slot}` or let `switchgpt watch` guide the in-session flow."
                 )
-            return StatusSummary(
-                slots=slots,
-                active_account_index=active_account_index,
-                readiness=readiness,
-                latest_result=latest_result,
-                next_action=next_action,
+
+        if readiness == "ready" and codex_sync.state == "out-of-sync":
+            readiness = "degraded"
+            next_action = (
+                "Run `switchgpt codex-sync` to resync Codex auth to the active slot."
             )
 
         return StatusSummary(
@@ -96,6 +119,7 @@ class StatusService:
             readiness=readiness,
             latest_result=latest_result,
             next_action=next_action,
+            codex_sync=codex_sync,
         )
 
     def _history_status(self) -> HistoryStatus:
@@ -132,3 +156,39 @@ class StatusService:
         if not isinstance(slot_index, int):
             return None
         return slot_index if any(slot.index == slot_index for slot in slots) else None
+
+    def _codex_sync_status(
+        self,
+        *,
+        active_account_index: int | None,
+        codex_sync_state: PersistedCodexSyncState | None,
+    ) -> CodexSyncStatus:
+        if active_account_index is None:
+            return CodexSyncStatus(
+                state="no-data",
+                method=(None if codex_sync_state is None else codex_sync_state.method),
+                synced_at=(
+                    None if codex_sync_state is None else codex_sync_state.synced_at
+                ),
+                error=(None if codex_sync_state is None else codex_sync_state.error),
+            )
+        if codex_sync_state is None:
+            return CodexSyncStatus(
+                state="no-data",
+                method=None,
+                synced_at=None,
+                error=None,
+            )
+        if (
+            codex_sync_state.status in {"ok", "fallback-ok"}
+            and codex_sync_state.synced_slot == active_account_index
+        ):
+            state = "in-sync"
+        else:
+            state = "out-of-sync"
+        return CodexSyncStatus(
+            state=state,
+            method=codex_sync_state.method,
+            synced_at=codex_sync_state.synced_at,
+            error=codex_sync_state.error,
+        )
