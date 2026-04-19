@@ -28,7 +28,11 @@ class ManagedBrowser:
     def _candidate_channels(self) -> list[str | None]:
         configured = (get_env("SWITCHGPT_BROWSER_CHANNEL", "") or "").strip()
         if configured:
-            return [configured]
+            channels: list[str | None] = [configured]
+            if configured != DEFAULT_BROWSER_CHANNEL:
+                channels.append(DEFAULT_BROWSER_CHANNEL)
+            channels.append(None)
+            return channels
         return [DEFAULT_BROWSER_CHANNEL, None]
 
     def _is_stealth_enabled(self) -> bool:

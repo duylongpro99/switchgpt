@@ -270,6 +270,51 @@ def test_open_workspace_applies_stealth_launch_flags_when_enabled(tmp_path, monk
     assert launched["kwargs"]["args"] == ["--disable-blink-features=AutomationControlled"]
 
 
+def test_open_workspace_falls_back_when_configured_channel_unavailable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    launched: list[dict[str, object]] = []
+
+    class FakePage:
+        def goto(self, url: str) -> None:
+            return None
+
+    class FakeBrowserContext:
+        def __init__(self) -> None:
+            self.pages = []
+
+        def new_page(self):
+            return FakePage()
+
+    class FakeChromium:
+        def launch_persistent_context(self, profile_dir: str, **kwargs):
+            launched.append(kwargs.copy())
+            if kwargs.get("channel") == "chrome":
+                raise RuntimeError("channel unavailable")
+            return FakeBrowserContext()
+
+    class FakePlaywrightHandle:
+        chromium = FakeChromium()
+
+    class FakePlaywrightFactory:
+        def start(self):
+            return FakePlaywrightHandle()
+
+    monkeypatch.setenv("SWITCHGPT_BROWSER_CHANNEL", "chrome")
+    monkeypatch.setattr("switchgpt.managed_browser.sync_playwright", lambda: FakePlaywrightFactory())
+
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=tmp_path / "profile")
+    context, page = browser.open_workspace()
+
+    assert launched == [
+        {"headless": False, "channel": "chrome"},
+        {"headless": False},
+    ]
+    assert context is not None
+    assert page is not None
+
+
 def test_managed_browser_stealth_flag_reads_from_dotenv(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("SWITCHGPT_BROWSER_STEALTH", raising=False)
