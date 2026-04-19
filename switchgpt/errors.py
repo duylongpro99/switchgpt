@@ -36,3 +36,7 @@ class ReauthRequiredError(SwitchError):
 
 class DoctorCheckError(SwitchGptError):
     """Raised when a bounded doctor check cannot complete normally."""
+
+
+class CodexAuthSyncFailedError(SwitchGptError):
+    """Raised when strict Codex auth sync cannot complete."""
