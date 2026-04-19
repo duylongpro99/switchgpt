@@ -1,26 +1,158 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import sys
 import re
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from .config import get_env
 from .errors import BrowserRegistrationError
 from .registration import RegistrationResult
 from .secret_store import SessionSecret
 
 
 _EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+MAX_REGISTRATION_CAPTURE_ATTEMPTS = 3
+CAPTURE_RETRY_WAIT_MS = 1000
+MAX_MANUAL_LOGIN_ATTEMPTS = 2
+INITIAL_LOGIN_PROMPT = "[switchgpt] Complete login in the browser, then press ENTER here."
+AUTH_ERROR_RETRY_PROMPT = (
+    "[switchgpt] Login reached an authentication error page. "
+    "Retry login in the browser (including any human verification), then press ENTER here."
+)
+DEFAULT_BROWSER_CHANNEL = "chrome"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
 class BrowserRegistrationClient:
     base_url: str
+    profile_dir: Path | None = None
+
+    def _candidate_channels(self) -> list[str | None]:
+        configured = (get_env("SWITCHGPT_BROWSER_CHANNEL", "") or "").strip()
+        if configured:
+            return [configured]
+        return [DEFAULT_BROWSER_CHANNEL, None]
+
+    def _is_stealth_enabled(self) -> bool:
+        value = get_env("SWITCHGPT_BROWSER_STEALTH", "") or ""
+        return value.strip().lower() in _TRUE_VALUES
+
+    def _stealth_launch_kwargs(self) -> dict[str, object]:
+        if not self._is_stealth_enabled():
+            return {}
+        return {
+            "ignore_default_args": ["--enable-automation"],
+            "args": ["--disable-blink-features=AutomationControlled"],
+        }
+
+    def _apply_stealth_context_overrides(self, context) -> None:
+        if not self._is_stealth_enabled():
+            return
+        adder = getattr(context, "add_init_script", None)
+        if callable(adder):
+            try:
+                adder(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                )
+            except Exception:
+                pass
+
+    def _launch_browser(self, playwright):
+        last_exc = None
+        for channel in self._candidate_channels():
+            launch_kwargs = {"headless": False}
+            launch_kwargs.update(self._stealth_launch_kwargs())
+            if channel is not None:
+                launch_kwargs["channel"] = channel
+            try:
+                return playwright.chromium.launch(**launch_kwargs)
+            except Exception as exc:
+                last_exc = exc
+        raise BrowserRegistrationError("Unable to launch browser registration context.") from last_exc
+
+    def _launch_persistent_context(self, playwright):
+        if self.profile_dir is None:
+            raise BrowserRegistrationError("Managed profile directory is required for persistent registration.")
+
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        last_exc = None
+        for channel in self._candidate_channels():
+            launch_kwargs = {"headless": False}
+            launch_kwargs.update(self._stealth_launch_kwargs())
+            if channel is not None:
+                launch_kwargs["channel"] = channel
+            try:
+                return playwright.chromium.launch_persistent_context(
+                    str(self.profile_dir),
+                    **launch_kwargs,
+                )
+            except Exception as exc:
+                last_exc = exc
+        raise BrowserRegistrationError("Unable to launch browser registration context.") from last_exc
+
+    def _open_registration_context(self, playwright, browser):
+        if self.profile_dir is not None:
+            return self._launch_persistent_context(playwright)
+        if browser is None:
+            raise BrowserRegistrationError("Unable to launch browser registration context.")
+        return browser.new_context()
+
+    def _is_debug_auth_enabled(self) -> bool:
+        value = get_env("SWITCHGPT_DEBUG_AUTH", "") or ""
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
+    def _emit_auth_debug(
+        self,
+        *,
+        stage: str,
+        manual_attempt: int,
+        capture_attempt: int | None,
+        page,
+        cookies,
+    ) -> None:
+        if not self._is_debug_auth_enabled():
+            return
+        url = getattr(page, "url", "")
+        has_session_cookie = self._has_session_cookie(cookies)
+        cookie_names = sorted(
+            cookie.get("name")
+            for cookie in cookies
+            if type(cookie.get("name")) is str
+        )
+        capture_label = "-" if capture_attempt is None else str(capture_attempt)
+        print(
+            "[switchgpt][debug-auth] "
+            f"stage={stage} "
+            f"manual_attempt={manual_attempt}/{MAX_MANUAL_LOGIN_ATTEMPTS} "
+            f"capture_attempt={capture_label}/{MAX_REGISTRATION_CAPTURE_ATTEMPTS} "
+            f"url={url!r} "
+            f"auth_error={self._looks_like_auth_error_url(url)} "
+            f"has_session_cookie={has_session_cookie} "
+            f"cookies={cookie_names}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def _assert_visible_mode(self, headless: bool) -> None:
         if headless:
             raise RuntimeError("Phase 1 registration requires a visible browser window.")
 
-    def _assert_authenticated_state(self, page) -> None:
+    def _has_session_cookie(self, cookies) -> bool:
+        for cookie in cookies:
+            if cookie.get("name") == "__Secure-next-auth.session-token":
+                value = cookie.get("value")
+                if type(value) is str and value:
+                    return True
+                break
+        return False
+
+    def _assert_authenticated_state(self, page, *, cookies=None) -> None:
+        if cookies is not None and self._has_session_cookie(cookies):
+            return
+
         url = getattr(page, "url", "")
         if self._looks_like_login_url(url):
             raise BrowserRegistrationError(
@@ -55,11 +187,46 @@ class BrowserRegistrationClient:
         return None
 
     def _discover_email(self, page) -> str | None:
+        session_email = self._discover_email_from_session_api(page)
+        if session_email is not None:
+            return session_email
         body_text = self._page_body_text(page)
         match = _EMAIL_PATTERN.search(body_text)
         if match is None:
             return None
         return self._normalize_email(match.group(0))
+
+    def _discover_email_from_session_api(self, page) -> str | None:
+        evaluator = getattr(page, "evaluate", None)
+        if not callable(evaluator):
+            return None
+        try:
+            payload = evaluator(
+                """
+                async () => {
+                    try {
+                        const response = await fetch("/api/auth/session", {
+                            credentials: "include",
+                        });
+                        if (!response.ok) return null;
+                        return await response.json();
+                    } catch {
+                        return null;
+                    }
+                }
+                """
+            )
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        user = payload.get("user")
+        if not isinstance(user, dict):
+            return None
+        email = user.get("email")
+        if type(email) is not str or not email.strip():
+            return None
+        return self._normalize_email(email)
 
     def _normalize_email(self, email: str) -> str:
         return email.strip().lower()
@@ -72,42 +239,131 @@ class BrowserRegistrationClient:
         lowered = url.lower()
         return any(marker in lowered for marker in ("/login", "/signin", "/auth"))
 
+    def _looks_like_auth_error_url(self, url: str) -> bool:
+        lowered = url.lower()
+        return "/auth/error" in lowered or "/api/auth/error" in lowered
+
+    def _recover_from_auth_error(self, page) -> None:
+        if not self._looks_like_auth_error_url(getattr(page, "url", "")):
+            return
+        try:
+            page.goto(self.base_url)
+        except Exception:
+            return
+
     def register(self) -> RegistrationResult:
         self._assert_visible_mode(headless=False)
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=False)
+            browser = None if self.profile_dir is not None else self._launch_browser(playwright)
+            context = self._open_registration_context(playwright, browser)
+            self._apply_stealth_context_overrides(context)
             try:
-                context = browser.new_context()
                 page = context.new_page()
                 page.goto(self.base_url)
-                input("[switchgpt] Complete login in the browser, then press ENTER here.")
-                self._assert_authenticated_state(page)
-                cookies = context.cookies()
-                session_token = self._require_cookie_value(
-                    cookies, "__Secure-next-auth.session-token"
-                )
-                csrf_cookie = self._optional_cookie_value(
-                    cookies, "__Host-next-auth.csrf-token"
-                )
-                email = self._discover_email(page) or "unknown@example.com"
-                return RegistrationResult(
-                    email=email,
-                    secret=SessionSecret(
-                        session_token=session_token,
-                        csrf_token=csrf_cookie,
-                    ),
-                    captured_at=datetime.now(UTC),
+                last_error = None
+                for manual_attempt in range(MAX_MANUAL_LOGIN_ATTEMPTS):
+                    self._emit_auth_debug(
+                        stage="manual-round-start",
+                        manual_attempt=manual_attempt + 1,
+                        capture_attempt=None,
+                        page=page,
+                        cookies=[],
+                    )
+                    if manual_attempt > 0 and self._looks_like_auth_error_url(getattr(page, "url", "")):
+                        self._emit_auth_debug(
+                            stage="reset-context",
+                            manual_attempt=manual_attempt + 1,
+                            capture_attempt=None,
+                            page=page,
+                            cookies=[],
+                        )
+                        try:
+                            context.close()
+                        except Exception:
+                            pass
+                        context = self._open_registration_context(playwright, browser)
+                        self._apply_stealth_context_overrides(context)
+                        page = context.new_page()
+                        page.goto(self.base_url)
+                    prompt = INITIAL_LOGIN_PROMPT if manual_attempt == 0 else AUTH_ERROR_RETRY_PROMPT
+                    input(prompt)
+                    for _ in range(MAX_REGISTRATION_CAPTURE_ATTEMPTS):
+                        capture_attempt = _ + 1
+                        self._emit_auth_debug(
+                            stage="capture-attempt-start",
+                            manual_attempt=manual_attempt + 1,
+                            capture_attempt=capture_attempt,
+                            page=page,
+                            cookies=[],
+                        )
+                        cookies = context.cookies()
+                        self._emit_auth_debug(
+                            stage="capture-check",
+                            manual_attempt=manual_attempt + 1,
+                            capture_attempt=capture_attempt,
+                            page=page,
+                            cookies=cookies,
+                        )
+                        try:
+                            self._assert_authenticated_state(page, cookies=cookies)
+                            session_token = self._require_cookie_value(
+                                cookies, "__Secure-next-auth.session-token"
+                            )
+                        except BrowserRegistrationError as exc:
+                            last_error = exc
+                            self._emit_auth_debug(
+                                stage="capture-failed",
+                                manual_attempt=manual_attempt + 1,
+                                capture_attempt=capture_attempt,
+                                page=page,
+                                cookies=cookies,
+                            )
+                            self._recover_from_auth_error(page)
+                            try:
+                                page.wait_for_timeout(CAPTURE_RETRY_WAIT_MS)
+                            except Exception:
+                                pass
+                            continue
+
+                        csrf_cookie = self._optional_cookie_value(
+                            cookies, "__Host-next-auth.csrf-token"
+                        )
+                        email = self._discover_email(page) or "unknown@example.com"
+                        return RegistrationResult(
+                            email=email,
+                            secret=SessionSecret(
+                                session_token=session_token,
+                                csrf_token=csrf_cookie,
+                            ),
+                            captured_at=datetime.now(UTC),
+                        )
+                if last_error is not None:
+                    self._emit_auth_debug(
+                        stage="final-failure",
+                        manual_attempt=MAX_MANUAL_LOGIN_ATTEMPTS,
+                        capture_attempt=MAX_REGISTRATION_CAPTURE_ATTEMPTS,
+                        page=page,
+                        cookies=[],
+                    )
+                    raise last_error
+                raise BrowserRegistrationError(
+                    "Could not verify authenticated state after login."
                 )
             finally:
-                browser.close()
+                try:
+                    context.close()
+                except Exception:
+                    pass
+                if browser is not None:
+                    browser.close()
 
     def reauth(self, existing_email: str) -> RegistrationResult:
         return self.register()
 
     def capture_existing_session(self, page, *, existing_email: str) -> RegistrationResult:
-        self._assert_authenticated_state(page)
         context = page.context
         cookies = context.cookies()
+        self._assert_authenticated_state(page, cookies=cookies)
         session_token = self._require_cookie_value(
             cookies, "__Secure-next-auth.session-token"
         )

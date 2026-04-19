@@ -3,6 +3,7 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from .config import get_env
 from .errors import ManagedBrowserError
 from .models import LimitState
 
@@ -12,6 +13,8 @@ LIMIT_DETECTION_MARKERS = (
     "usage limit",
 )
 RUNTIME_PROBE_TIMEOUT_MS = 5000
+DEFAULT_BROWSER_CHANNEL = "chrome"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -21,6 +24,52 @@ class ManagedBrowser:
     _playwright: object | None = field(default=None, init=False, repr=False)
     _context: object | None = field(default=None, init=False, repr=False)
     _page: object | None = field(default=None, init=False, repr=False)
+
+    def _candidate_channels(self) -> list[str | None]:
+        configured = (get_env("SWITCHGPT_BROWSER_CHANNEL", "") or "").strip()
+        if configured:
+            return [configured]
+        return [DEFAULT_BROWSER_CHANNEL, None]
+
+    def _is_stealth_enabled(self) -> bool:
+        value = get_env("SWITCHGPT_BROWSER_STEALTH", "") or ""
+        return value.strip().lower() in _TRUE_VALUES
+
+    def _stealth_launch_kwargs(self) -> dict[str, object]:
+        if not self._is_stealth_enabled():
+            return {}
+        return {
+            "ignore_default_args": ["--enable-automation"],
+            "args": ["--disable-blink-features=AutomationControlled"],
+        }
+
+    def _apply_stealth_context_overrides(self, context) -> None:
+        if not self._is_stealth_enabled():
+            return
+        adder = getattr(context, "add_init_script", None)
+        if callable(adder):
+            try:
+                adder(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                )
+            except Exception:
+                pass
+
+    def _launch_persistent_context(self, playwright, profile_dir: Path, *, headless: bool):
+        last_exc = None
+        for channel in self._candidate_channels():
+            launch_kwargs = {"headless": headless}
+            launch_kwargs.update(self._stealth_launch_kwargs())
+            if channel is not None:
+                launch_kwargs["channel"] = channel
+            try:
+                return playwright.chromium.launch_persistent_context(
+                    str(profile_dir),
+                    **launch_kwargs,
+                )
+            except Exception as exc:
+                last_exc = exc
+        raise ManagedBrowserError("Unable to launch the managed ChatGPT browser workspace.") from last_exc
 
     def open_workspace(self):
         if self.profile_dir is None:
@@ -70,8 +119,9 @@ class ManagedBrowser:
         context = None
         try:
             playwright = sync_playwright().start()
-            context = playwright.chromium.launch_persistent_context(
-                str(profile_dir),
+            context = self._launch_persistent_context(
+                playwright,
+                profile_dir,
                 headless=headless,
             )
             page = self._resolve_live_page(context, None)
@@ -88,8 +138,9 @@ class ManagedBrowser:
             self._discard_runtime(stop_playwright=True)
         self._playwright = sync_playwright().start()
         try:
-            context = self._playwright.chromium.launch_persistent_context(
-                str(self.profile_dir),
+            context = self._launch_persistent_context(
+                self._playwright,
+                self.profile_dir,
                 headless=False,
             )
         except Exception as exc:
@@ -98,6 +149,7 @@ class ManagedBrowser:
             self._context = None
             self._page = None
             raise ManagedBrowserError("Unable to launch the managed ChatGPT browser workspace.") from exc
+        self._apply_stealth_context_overrides(context)
         self._context = context
         self._page = None
         return context
@@ -196,7 +248,6 @@ class ManagedBrowser:
                     "name": "__Host-next-auth.csrf-token",
                     "value": csrf_token,
                     "url": self.base_url,
-                    "path": "/",
                     "secure": True,
                 }
             )

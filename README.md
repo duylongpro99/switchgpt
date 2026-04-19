@@ -19,6 +19,7 @@ uv run playwright install chromium
 - `uv run switchgpt doctor`
 - `uv run switchgpt status`
 - `uv run switchgpt add`
+- `uv run switchgpt add --from-open`
 - `uv run switchgpt add --reauth <slot>`
 - `uv run switchgpt switch`
 - `uv run switchgpt watch`
@@ -26,7 +27,9 @@ uv run playwright install chromium
 Use `paths` to inspect the repository-owned runtime locations.
 Use `doctor` to check local readiness before running browser-dependent flows.
 Use `status` to inspect registered account slots.
-Use `add` to register a new account, or `add --reauth <slot>` to reauthenticate an existing slot.
+Use `add` to register a new account.
+Use `add --from-open` to open the managed workspace, complete login manually, then capture the authenticated session into a new slot.
+Use `add --reauth <slot>` to reauthenticate an existing slot.
 Use `switch` to rotate to another account slot.
 Use `watch` to run the foreground monitoring loop.
 

@@ -167,6 +167,7 @@ def test_prepare_switch_clears_and_injects_cookies() -> None:
     assert csrf_cookie["secure"] is True
     assert csrf_cookie["url"] == "https://chatgpt.com"
     assert "domain" not in csrf_cookie
+    assert "path" not in csrf_cookie
     assert page.visited[-1] == "https://chatgpt.com"
 
 
@@ -225,6 +226,57 @@ def test_open_workspace_creates_profile_dir_and_returns_runtime_handles(tmp_path
     assert launched["goto"] == "https://chatgpt.com"
     assert context is not None
     assert page is not None
+
+
+def test_open_workspace_applies_stealth_launch_flags_when_enabled(tmp_path, monkeypatch) -> None:
+    launched = {}
+
+    class FakePage:
+        def goto(self, url: str) -> None:
+            launched["goto"] = url
+
+    class FakeBrowserContext:
+        def __init__(self) -> None:
+            self.pages = []
+            self.scripts = []
+
+        def add_init_script(self, script: str) -> None:
+            self.scripts.append(script)
+
+        def new_page(self):
+            return FakePage()
+
+    class FakeChromium:
+        def launch_persistent_context(self, profile_dir: str, **kwargs):
+            launched["profile_dir"] = profile_dir
+            launched["kwargs"] = kwargs
+            return FakeBrowserContext()
+
+    class FakePlaywrightHandle:
+        chromium = FakeChromium()
+
+    class FakePlaywrightFactory:
+        def start(self):
+            return FakePlaywrightHandle()
+
+    monkeypatch.setenv("SWITCHGPT_BROWSER_STEALTH", "true")
+    monkeypatch.setattr("switchgpt.managed_browser.sync_playwright", lambda: FakePlaywrightFactory())
+
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=tmp_path / "profile")
+    browser.open_workspace()
+
+    assert launched["kwargs"]["headless"] is False
+    assert launched["kwargs"]["ignore_default_args"] == ["--enable-automation"]
+    assert launched["kwargs"]["args"] == ["--disable-blink-features=AutomationControlled"]
+
+
+def test_managed_browser_stealth_flag_reads_from_dotenv(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHGPT_BROWSER_STEALTH", raising=False)
+    (tmp_path / ".env").write_text("SWITCHGPT_BROWSER_STEALTH=yes\n", encoding="utf-8")
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=tmp_path / "profile")
+
+    assert browser._is_stealth_enabled() is True
 
 
 def test_open_workspace_recovers_from_closed_cached_page(tmp_path, monkeypatch) -> None:

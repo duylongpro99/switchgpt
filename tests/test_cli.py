@@ -56,7 +56,56 @@ def test_build_runtime_container_reuses_single_settings_snapshot(monkeypatch) ->
     assert runtime.settings.chatgpt_base_url == "https://chatgpt.com"
 
 
-def test_status_command_is_registered() -> None:
+def test_build_registration_service_passes_managed_profile_dir_to_browser_client(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "settings": type(
+                "Settings",
+                (),
+                {
+                    "chatgpt_base_url": "https://chatgpt.com",
+                    "managed_profile_dir": "profile-dir",
+                },
+            )(),
+            "account_store": object(),
+            "secret_store": object(),
+        },
+    )()
+
+    class FakeBrowserRegistrationClient:
+        def __init__(self, *, base_url, profile_dir):
+            captured["base_url"] = base_url
+            captured["profile_dir"] = profile_dir
+
+    class FakeRegistrationService:
+        def __init__(self, account_store, secret_store, browser_client) -> None:
+            captured["service_args"] = (account_store, secret_store, browser_client)
+
+    monkeypatch.setattr(
+        "switchgpt.bootstrap.BrowserRegistrationClient",
+        FakeBrowserRegistrationClient,
+    )
+    monkeypatch.setattr(
+        "switchgpt.bootstrap.RegistrationService",
+        FakeRegistrationService,
+    )
+
+    from switchgpt.bootstrap import build_registration_service
+
+    build_registration_service(runtime=runtime)
+
+    assert captured["base_url"] == "https://chatgpt.com"
+    assert captured["profile_dir"] == "profile-dir"
+    assert captured["service_args"][0] is runtime.account_store
+    assert captured["service_args"][1] is runtime.secret_store
+
+
+def test_status_command_is_registered(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
     assert "No accounts registered." in result.stdout
@@ -203,6 +252,50 @@ def test_add_command_reports_registered_slot(monkeypatch) -> None:
     result = runner.invoke(app, ["add"])
     assert result.exit_code == 0
     assert "Registered account1@example.com in slot 0." in result.stdout
+
+
+def test_add_command_from_open_captures_managed_workspace_session(monkeypatch) -> None:
+    page = object()
+    events: list[str] = []
+
+    class FakeRegistrationService:
+        def add_in_managed_workspace(self, *, page):
+            events.append("capture")
+            assert page is not None
+
+            class Result:
+                index = 1
+                email = "account2@example.com"
+
+            return Result()
+
+    class FakeManagedBrowser:
+        def open_workspace(self):
+            events.append("open-workspace")
+            return object(), page
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": events.append("input"))
+    monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
+    monkeypatch.setattr("switchgpt.cli.build_managed_browser", lambda: FakeManagedBrowser())
+
+    result = runner.invoke(app, ["add", "--from-open"])
+
+    assert result.exit_code == 0
+    assert "Registered account2@example.com in slot 1." in result.stdout
+    assert events == ["open-workspace", "input", "capture"]
+
+
+def test_add_command_rejects_from_open_with_reauth(monkeypatch) -> None:
+    class FakeRegistrationService:
+        def add(self):
+            raise AssertionError("should not be called")
+
+    monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
+
+    result = runner.invoke(app, ["add", "--from-open", "--reauth", "0"])
+
+    assert result.exit_code == 1
+    assert "cannot be combined with --reauth" in result.stderr
 
 
 def test_reauth_command_requires_slot_index(monkeypatch) -> None:

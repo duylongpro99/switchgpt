@@ -7,7 +7,7 @@
 3. Use `uv run switchgpt doctor` to check local readiness before browser-dependent work.
 4. Use `uv run switchgpt paths` to confirm repository-owned runtime locations.
 5. Use `uv run switchgpt status` to inspect account state.
-6. Use `uv run switchgpt add` or `uv run switchgpt add --reauth <slot>` to manage account slots.
+6. Use `uv run switchgpt add`, `uv run switchgpt add --from-open`, or `uv run switchgpt add --reauth <slot>` to manage account slots.
 7. Use `uv run switchgpt switch` and `uv run switchgpt watch` for switch and monitoring flows.
 8. Run `uv run pytest` before merging changes.
 

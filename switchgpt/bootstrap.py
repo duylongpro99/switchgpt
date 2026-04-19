@@ -39,7 +39,10 @@ def build_runtime() -> Runtime:
 
 def build_registration_service(runtime: Runtime | None = None) -> RegistrationService:
     runtime = build_runtime() if runtime is None else runtime
-    browser_client = BrowserRegistrationClient(base_url=runtime.settings.chatgpt_base_url)
+    browser_client = BrowserRegistrationClient(
+        base_url=runtime.settings.chatgpt_base_url,
+        profile_dir=runtime.settings.managed_profile_dir,
+    )
     return RegistrationService(runtime.account_store, runtime.secret_store, browser_client)
 
 

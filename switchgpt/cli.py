@@ -96,10 +96,23 @@ def doctor() -> None:
 
 
 @app.command()
-def add(reauth: int | None = typer.Option(None, "--reauth")) -> None:
+def add(
+    reauth: int | None = typer.Option(None, "--reauth"),
+    from_open: bool = typer.Option(False, "--from-open"),
+) -> None:
     try:
         ensure_supported_platform()
+        if from_open and reauth is not None:
+            raise SwitchGptError("--from-open cannot be combined with --reauth.")
         service = build_registration_service()
+        if from_open:
+            _, page = build_managed_browser().open_workspace()
+            input(
+                "[switchgpt] Complete login in the managed browser, then press ENTER here."
+            )
+            record = service.add_in_managed_workspace(page=page)
+            print(f"Registered {record.email} in slot {record.index}.")
+            return
         if reauth is None:
             record = service.add()
             print(f"Registered {record.email} in slot {record.index}.")

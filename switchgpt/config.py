@@ -6,6 +6,36 @@ from pathlib import Path
 from .errors import UnsupportedPlatformError
 
 
+def _read_dotenv(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def get_env(name: str, default: str | None = None) -> str | None:
+    if name in os.environ:
+        return os.environ[name]
+    dotenv_values = _read_dotenv(Path.cwd() / ".env")
+    return dotenv_values.get(name, default)
+
+
 @dataclass(frozen=True)
 class SettingsItem:
     name: str
@@ -28,10 +58,10 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         home = Path(os.environ["HOME"])
-        data_dir = Path(os.environ.get("SWITCHGPT_HOME", home / ".switchgpt"))
-        slot_count = int(os.environ.get("SWITCHGPT_SLOT_COUNT", "3"))
-        keychain_service = os.environ.get("SWITCHGPT_KEYCHAIN_SERVICE", "switchgpt")
-        chatgpt_base_url = os.environ.get("SWITCHGPT_BASE_URL", "https://chatgpt.com")
+        data_dir = Path(get_env("SWITCHGPT_HOME", str(home / ".switchgpt")) or str(home / ".switchgpt"))
+        slot_count = int(get_env("SWITCHGPT_SLOT_COUNT", "3") or "3")
+        keychain_service = get_env("SWITCHGPT_KEYCHAIN_SERVICE", "switchgpt") or "switchgpt"
+        chatgpt_base_url = get_env("SWITCHGPT_BASE_URL", "https://chatgpt.com") or "https://chatgpt.com"
         return cls(
             data_dir=data_dir,
             metadata_path=data_dir / "accounts.json",

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from switchgpt.config import Settings, SettingsItem, ensure_supported_platform
+from switchgpt.config import Settings, SettingsItem, ensure_supported_platform, get_env
 from switchgpt.errors import ManagedBrowserError, SwitchError, SwitchGptError, UnsupportedPlatformError
 
 
@@ -59,3 +59,25 @@ def test_settings_support_env_overrides_and_describe_items(
 def test_phase_2_error_types_inherit_from_switchgpt_error() -> None:
     assert issubclass(ManagedBrowserError, SwitchGptError)
     assert issubclass(SwitchError, SwitchGptError)
+
+
+def test_get_env_reads_from_dotenv_when_process_env_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHGPT_BROWSER_CHANNEL", raising=False)
+    (tmp_path / ".env").write_text("SWITCHGPT_BROWSER_CHANNEL=chrome\n", encoding="utf-8")
+
+    assert get_env("SWITCHGPT_BROWSER_CHANNEL") == "chrome"
+
+
+def test_get_env_prefers_process_env_over_dotenv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SWITCHGPT_BROWSER_CHANNEL", "msedge")
+    (tmp_path / ".env").write_text("SWITCHGPT_BROWSER_CHANNEL=chrome\n", encoding="utf-8")
+
+    assert get_env("SWITCHGPT_BROWSER_CHANNEL") == "msedge"

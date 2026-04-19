@@ -23,6 +23,32 @@ class RegistrationService:
         slot = self._account_store.next_empty_slot()
         key = f"switchgpt_account_{slot}"
         result = self._browser_client.register()
+        return self._persist_add_result(
+            slot=slot,
+            key=key,
+            result=result,
+        )
+
+    def add_in_managed_workspace(self, *, page) -> AccountRecord:
+        slot = self._account_store.next_empty_slot()
+        key = f"switchgpt_account_{slot}"
+        result = self._browser_client.capture_existing_session(
+            page,
+            existing_email="unknown@example.com",
+        )
+        return self._persist_add_result(
+            slot=slot,
+            key=key,
+            result=result,
+        )
+
+    def _persist_add_result(
+        self,
+        *,
+        slot: int,
+        key: str,
+        result: RegistrationResult,
+    ) -> AccountRecord:
         self._secret_store.write(key, result.secret)
         record = AccountRecord(
             index=slot,
