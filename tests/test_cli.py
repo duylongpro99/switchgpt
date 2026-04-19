@@ -407,6 +407,114 @@ def test_status_command_passes_persisted_codex_sync_metadata_to_summary(monkeypa
     assert codex_sync_state.error is None
 
 
+def test_status_command_uses_no_codex_sync_state_when_snapshot_has_no_sync_metadata(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+    captured: dict[str, object] = {}
+
+    class FakeStore:
+        class Snapshot:
+            accounts = [
+                type(
+                    "Account",
+                    (),
+                    {
+                        "index": 0,
+                        "email": "account1@example.com",
+                        "keychain_key": "switchgpt_account_0",
+                        "last_error": None,
+                    },
+                )()
+            ]
+            active_account_index = 0
+            last_switch_at = None
+            last_codex_sync_at = None
+            last_codex_sync_slot = None
+            last_codex_sync_method = None
+            last_codex_sync_status = None
+            last_codex_sync_error = None
+
+        def load(self):
+            return self.Snapshot()
+
+    class FakeStatusService:
+        def summarize(self, accounts, *, active_account_index, codex_sync_state):
+            captured["codex_sync_state"] = codex_sync_state
+            return type(
+                "Summary",
+                (),
+                {
+                    "slots": [],
+                    "readiness": "ready",
+                    "latest_result": None,
+                    "next_action": None,
+                    "active_account_index": active_account_index,
+                    "codex_sync": None,
+                },
+            )()
+
+    monkeypatch.setattr(
+        "switchgpt.cli.build_status_service",
+        lambda: (FakeStore(), FakeStatusService()),
+    )
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    assert captured["codex_sync_state"] is None
+
+
+def test_status_command_reports_real_no_data_when_snapshot_has_no_codex_sync_metadata(
+    monkeypatch,
+) -> None:
+    from switchgpt.status_service import StatusService
+
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
+    class FakeStore:
+        class Snapshot:
+            accounts = [
+                type(
+                    "Account",
+                    (),
+                    {
+                        "index": 0,
+                        "email": "account1@example.com",
+                        "keychain_key": "switchgpt_account_0",
+                        "last_error": None,
+                        "status": "registered",
+                    },
+                )()
+            ]
+            active_account_index = 0
+            last_switch_at = None
+            last_codex_sync_at = None
+            last_codex_sync_slot = None
+            last_codex_sync_method = None
+            last_codex_sync_status = None
+            last_codex_sync_error = None
+
+        def load(self):
+            return self.Snapshot()
+
+    class FakeSecretStore:
+        def exists(self, key: str) -> bool:
+            return key == "switchgpt_account_0"
+
+    monkeypatch.setattr(
+        "switchgpt.cli.build_status_service",
+        lambda: (FakeStore(), StatusService(FakeSecretStore())),
+    )
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    assert "Readiness: ready" in result.stdout
+    assert "Codex sync: no-data" in result.stdout
+    assert "Next action:" not in result.stdout
+
+
 def test_render_status_summary_includes_codex_sync_lines() -> None:
     summary = type(
         "Summary",

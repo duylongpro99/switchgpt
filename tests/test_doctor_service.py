@@ -325,3 +325,40 @@ def test_run_warns_when_last_codex_sync_failed_for_active_slot() -> None:
     assert codex_sync_check.status == "warn"
     assert "failed" in codex_sync_check.detail
     assert "switchgpt codex-sync" in codex_sync_check.next_action
+
+
+def test_run_warns_when_last_codex_sync_failed_for_different_slot_than_active() -> None:
+    service = DoctorService(
+        metadata_store=type(
+            "Store",
+            (),
+            {
+                "load": lambda self: Snapshot(
+                    [Account("switchgpt_account_0"), Account("switchgpt_account_1")],
+                    active_account_index=0,
+                    last_codex_sync_slot=1,
+                    last_codex_sync_status="failed",
+                    last_codex_sync_method="env-fallback",
+                    last_codex_sync_at=datetime(2026, 4, 19, 9, 45, tzinfo=UTC),
+                    last_codex_sync_error="codex-auth-write-failed",
+                )
+            },
+        )(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type(
+            "Secrets",
+            (),
+            {"exists": lambda self, key: key in {"switchgpt_account_0", "switchgpt_account_1"}},
+        )(),
+        managed_browser=FakeManagedBrowser(can_open=True),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    codex_sync_check = next(check for check in report.checks if check.name == "codex-sync")
+    assert codex_sync_check.status == "warn"
+    assert "slot 1" in codex_sync_check.detail
+    assert "active slot is 0" in codex_sync_check.detail
+    assert "failed for active slot 0" not in codex_sync_check.detail
+    assert "switchgpt codex-sync" in codex_sync_check.next_action

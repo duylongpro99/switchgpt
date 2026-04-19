@@ -46,6 +46,23 @@ def build_watch_service():
     return bootstrap.build_watch_service()
 
 
+def _persisted_codex_sync_state_from_snapshot(snapshot):
+    synced_slot = getattr(snapshot, "last_codex_sync_slot", None)
+    status = getattr(snapshot, "last_codex_sync_status", None)
+    method = getattr(snapshot, "last_codex_sync_method", None)
+    synced_at = getattr(snapshot, "last_codex_sync_at", None)
+    error = getattr(snapshot, "last_codex_sync_error", None)
+    if all(value is None for value in (synced_slot, status, method, synced_at, error)):
+        return None
+    return PersistedCodexSyncState(
+        synced_slot=synced_slot,
+        status=status,
+        method=method,
+        synced_at=synced_at,
+        error=error,
+    )
+
+
 @app.command()
 def paths() -> None:
     try:
@@ -70,13 +87,7 @@ def status() -> None:
         summary = service.summarize(
             snapshot.accounts,
             active_account_index=snapshot.active_account_index,
-            codex_sync_state=PersistedCodexSyncState(
-                synced_slot=getattr(snapshot, "last_codex_sync_slot", None),
-                status=getattr(snapshot, "last_codex_sync_status", None),
-                method=getattr(snapshot, "last_codex_sync_method", None),
-                synced_at=getattr(snapshot, "last_codex_sync_at", None),
-                error=getattr(snapshot, "last_codex_sync_error", None),
-            ),
+            codex_sync_state=_persisted_codex_sync_state_from_snapshot(snapshot),
         )
         for line in render_status_summary(summary):
             print(line)

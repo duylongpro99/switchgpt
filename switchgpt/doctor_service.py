@@ -131,7 +131,18 @@ class DoctorService:
             )
 
         if sync_status == "failed":
-            detail = f"Last Codex sync failed for active slot {active_slot}."
+            if sync_slot == active_slot:
+                detail = f"Last Codex sync failed for active slot {active_slot}."
+            elif sync_slot is None:
+                detail = (
+                    f"Last Codex sync failed, but no synced slot was recorded for active slot "
+                    f"{active_slot}."
+                )
+            else:
+                detail = (
+                    f"Last Codex sync failed for slot {sync_slot}; active slot is "
+                    f"{active_slot}."
+                )
             if sync_error:
                 detail = f"{detail} Error: {sync_error}"
             return DoctorCheck("codex-sync", "warn", detail, repair_action)
