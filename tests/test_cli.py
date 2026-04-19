@@ -1,8 +1,9 @@
+import pytest
 from typer.testing import CliRunner
 
 from switchgpt.account_store import AccountStore
 from switchgpt.cli import app
-from switchgpt.errors import SwitchError
+from switchgpt.errors import CodexAuthSyncFailedError, SwitchError
 from switchgpt.models import AccountRecord, AccountState
 from switchgpt.registration import RegistrationService
 
@@ -128,6 +129,92 @@ def test_build_switch_service_uses_bootstrap_wiring(monkeypatch) -> None:
     from switchgpt.cli import build_switch_service
 
     assert build_switch_service() is sentinel_service
+
+
+def test_build_codex_sync_command_service_uses_bootstrap_wiring(monkeypatch) -> None:
+    sentinel_service = object()
+    monkeypatch.setattr(
+        "switchgpt.cli.bootstrap.build_codex_sync_command_service",
+        lambda: sentinel_service,
+    )
+
+    from switchgpt.cli import build_codex_sync_command_service
+
+    assert build_codex_sync_command_service() is sentinel_service
+
+
+def test_codex_sync_command_service_syncs_active_slot_from_runtime_state() -> None:
+    sync_call: dict[str, object] = {}
+    sentinel_result = object()
+
+    class FakeAccountStore:
+        class Snapshot:
+            active_account_index = 1
+
+        def load(self):
+            return self.Snapshot()
+
+        def get_record(self, index: int):
+            assert index == 1
+            return type(
+                "Account",
+                (),
+                {
+                    "index": 1,
+                    "email": "account2@example.com",
+                    "keychain_key": "switchgpt_account_1",
+                },
+            )()
+
+    class FakeSecretStore:
+        def read(self, key: str):
+            assert key == "switchgpt_account_1"
+            return type(
+                "Secret",
+                (),
+                {
+                    "session_token": "session-2",
+                    "csrf_token": "csrf-2",
+                },
+            )()
+
+    class FakeSyncService:
+        def sync_active_slot(self, **kwargs):
+            sync_call.update(kwargs)
+            return sentinel_result
+
+    from switchgpt.bootstrap import CodexSyncCommandService
+
+    result = CodexSyncCommandService(
+        FakeAccountStore(),
+        FakeSecretStore(),
+        FakeSyncService(),
+    ).run()
+
+    assert result is sentinel_result
+    assert sync_call["active_slot"] == 1
+    assert sync_call["email"] == "account2@example.com"
+    assert sync_call["session_token"] == "session-2"
+    assert sync_call["csrf_token"] == "csrf-2"
+    assert isinstance(sync_call["occurred_at"], datetime)
+
+
+def test_codex_sync_command_service_requires_active_slot() -> None:
+    class FakeAccountStore:
+        class Snapshot:
+            active_account_index = None
+
+        def load(self):
+            return self.Snapshot()
+
+    from switchgpt.bootstrap import CodexSyncCommandService
+
+    with pytest.raises(SwitchError, match="No active slot available for Codex sync."):
+        CodexSyncCommandService(
+            FakeAccountStore(),
+            object(),
+            object(),
+        ).run()
 
 
 def test_status_command_is_registered(monkeypatch, tmp_path) -> None:
@@ -456,6 +543,87 @@ def test_switch_command_reports_selected_account_for_default_path(monkeypatch) -
 
     assert result.exit_code == 0
     assert "Switched to account2@example.com in slot 1." in result.stdout
+
+
+def test_codex_sync_command_repairs_active_slot_and_prints_method(monkeypatch) -> None:
+    class FakeService:
+        def run(self):
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "fallback-ok",
+                    "method": "env-fallback",
+                },
+            )()
+
+    monkeypatch.setattr(
+        "switchgpt.cli.build_codex_sync_command_service",
+        lambda: FakeService(),
+    )
+
+    result = runner.invoke(app, ["codex-sync"])
+
+    assert result.exit_code == 0
+    assert "Codex auth sync: fallback-ok (env-fallback)." in result.stdout
+
+
+def test_codex_sync_command_exits_non_zero_when_sync_result_failed(monkeypatch) -> None:
+    class FakeService:
+        def run(self):
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "failed",
+                    "method": None,
+                },
+            )()
+
+    monkeypatch.setattr(
+        "switchgpt.cli.build_codex_sync_command_service",
+        lambda: FakeService(),
+    )
+
+    result = runner.invoke(app, ["codex-sync"])
+
+    assert result.exit_code == 1
+    assert "Codex auth sync: failed." in result.stdout
+
+
+def test_codex_sync_command_reports_domain_errors_cleanly(monkeypatch) -> None:
+    class FakeService:
+        def run(self):
+            raise SwitchError("No active slot available for Codex sync.")
+
+    monkeypatch.setattr(
+        "switchgpt.cli.build_codex_sync_command_service",
+        lambda: FakeService(),
+    )
+
+    result = runner.invoke(app, ["codex-sync"])
+
+    assert result.exit_code == 1
+    assert "No active slot available for Codex sync." in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_switch_command_surfaces_codex_sync_failure_with_repair_hint(monkeypatch) -> None:
+    class FakeService:
+        def switch_to(self, index: int):
+            raise CodexAuthSyncFailedError(
+                "Codex auth sync failed after switch. Run `switchgpt codex-sync` to repair.",
+                failure_class="codex-auth-fallback-failed",
+            )
+
+    monkeypatch.setattr("switchgpt.cli.build_switch_service", lambda: FakeService())
+
+    result = runner.invoke(app, ["switch", "--to", "1"])
+
+    assert result.exit_code == 1
+    assert "Codex auth sync failed after switch." in result.stderr
+    assert "switchgpt codex-sync" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_switch_command_surfaces_switch_error_cleanly(monkeypatch) -> None:

@@ -37,6 +37,10 @@ def build_switch_service():
     return bootstrap.build_switch_service()
 
 
+def build_codex_sync_command_service():
+    return bootstrap.build_codex_sync_command_service()
+
+
 def build_watch_service():
     return bootstrap.build_watch_service()
 
@@ -119,6 +123,20 @@ def open() -> None:
         ensure_supported_platform()
         build_managed_browser().open_workspace()
         print("Managed ChatGPT workspace is ready.")
+    except SwitchGptError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("codex-sync")
+def codex_sync() -> None:
+    try:
+        ensure_supported_platform()
+        result = build_codex_sync_command_service().run()
+        method_suffix = f" ({result.method})" if result.method is not None else ""
+        print(f"Codex auth sync: {result.outcome}{method_suffix}.")
+        if result.outcome == "failed":
+            raise typer.Exit(code=1)
     except SwitchGptError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc

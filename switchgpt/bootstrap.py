@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import platform
 
 from .account_store import AccountStore
@@ -9,6 +10,7 @@ from .codex_auth_sync import (
 )
 from .config import Settings
 from .doctor_service import DoctorService
+from .errors import SwitchError
 from .managed_browser import ManagedBrowser
 from .playwright_client import BrowserRegistrationClient
 from .registration import RegistrationService
@@ -26,6 +28,32 @@ class Runtime:
     secret_store: KeychainSecretStore
     managed_browser: ManagedBrowser
     history_store: SwitchHistoryStore
+
+
+class CodexSyncCommandService:
+    def __init__(self, account_store, secret_store, codex_auth_sync) -> None:
+        self._account_store = account_store
+        self._secret_store = secret_store
+        self._codex_auth_sync = codex_auth_sync
+
+    def run(self):
+        snapshot = self._account_store.load()
+        active_slot = snapshot.active_account_index
+        if active_slot is None:
+            raise SwitchError("No active slot available for Codex sync.")
+        account = self._account_store.get_record(active_slot)
+        secret = self._secret_store.read(account.keychain_key)
+        if secret is None:
+            raise SwitchError(
+                f"Stored session secret is missing for slot {account.index}."
+            )
+        return self._codex_auth_sync.sync_active_slot(
+            active_slot=account.index,
+            email=account.email,
+            session_token=secret.session_token,
+            csrf_token=secret.csrf_token,
+            occurred_at=datetime.now(UTC),
+        )
 
 
 def build_runtime() -> Runtime:
@@ -101,6 +129,17 @@ def build_switch_service(runtime: Runtime | None = None) -> SwitchService:
         runtime.managed_browser,
         runtime.history_store,
         codex_auth_sync=build_codex_auth_sync_service(runtime),
+    )
+
+
+def build_codex_sync_command_service(
+    runtime: Runtime | None = None,
+) -> CodexSyncCommandService:
+    runtime = build_runtime() if runtime is None else runtime
+    return CodexSyncCommandService(
+        runtime.account_store,
+        runtime.secret_store,
+        build_codex_auth_sync_service(runtime),
     )
 
 
