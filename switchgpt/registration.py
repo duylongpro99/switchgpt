@@ -2,6 +2,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 
+from .codex_auth_sync import raise_for_failed_sync
+from .errors import CodexAuthSyncFailedError
 from .models import AccountRecord, AccountState
 from .secret_store import SessionSecret
 
@@ -14,10 +16,18 @@ class RegistrationResult:
 
 
 class RegistrationService:
-    def __init__(self, account_store, secret_store, browser_client) -> None:
+    def __init__(
+        self,
+        account_store,
+        secret_store,
+        browser_client,
+        *,
+        codex_auth_sync=None,
+    ) -> None:
         self._account_store = account_store
         self._secret_store = secret_store
         self._browser_client = browser_client
+        self._codex_auth_sync = codex_auth_sync
 
     def add(self) -> AccountRecord:
         slot = self._account_store.next_empty_slot()
@@ -66,6 +76,7 @@ class RegistrationService:
             with suppress(Exception):
                 self._secret_store.delete(key)
             raise
+        self._sync_active_slot_or_raise(record=record, secret=result.secret)
         return record
 
     def reauth(self, index: int) -> AccountRecord:
@@ -118,4 +129,28 @@ class RegistrationService:
                 else:
                     self._secret_store.replace(existing.keychain_key, previous_secret)
             raise
+        self._sync_active_slot_or_raise(record=refreshed, secret=result.secret)
         return refreshed
+
+    def _sync_active_slot_or_raise(
+        self,
+        *,
+        record: AccountRecord,
+        secret: SessionSecret,
+    ) -> None:
+        if self._codex_auth_sync is None:
+            return
+        result = self._codex_auth_sync.sync_active_slot(
+            active_slot=record.index,
+            email=record.email,
+            session_token=secret.session_token,
+            csrf_token=secret.csrf_token,
+            occurred_at=record.last_reauth_at,
+        )
+        try:
+            raise_for_failed_sync(result)
+        except CodexAuthSyncFailedError as exc:
+            raise CodexAuthSyncFailedError(
+                "Codex auth sync failed after registration update. Run `switchgpt codex-sync` to repair.",
+                failure_class=exc.failure_class,
+            ) from exc

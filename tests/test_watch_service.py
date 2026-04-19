@@ -1,6 +1,11 @@
 from datetime import UTC, datetime
 
-from switchgpt.errors import ManagedBrowserError, ReauthRequiredError, SwitchError
+from switchgpt.errors import (
+    CodexAuthSyncFailedError,
+    ManagedBrowserError,
+    ReauthRequiredError,
+    SwitchError,
+)
 from switchgpt.models import AccountRecord, AccountState, LimitState
 from switchgpt.switch_history import SwitchEvent
 from switchgpt.watch_service import WatchService
@@ -266,6 +271,47 @@ def test_run_stops_with_no_eligible_account_when_all_candidates_fail() -> None:
     assert history_store.events[-1].result == "no-eligible-account"
 
 
+def test_watch_auto_switch_codex_sync_failure_exits_non_zero() -> None:
+    notifications = []
+    managed_browser = FakeManagedBrowser(detections=[LimitState.LIMIT_DETECTED])
+    switch_service = FakeSwitchService(
+        failures={
+            1: CodexAuthSyncFailedError(
+                "Codex auth sync failed after switch. Run `switchgpt codex-sync` to repair."
+            )
+        }
+    )
+    history_store = FakeHistoryStore()
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [
+                build_account(0, "a@example.com"),
+                build_account(1, "b@example.com"),
+                build_account(2, "c@example.com"),
+            ],
+            active_account_index=0,
+        ),
+        managed_browser=managed_browser,
+        switch_service=switch_service,
+        history_store=history_store,
+        poll_interval_seconds=0.0,
+    )
+
+    result = service.run(
+        notify=notifications.append,
+        sleep_fn=lambda _: None,
+        stop_after_cycles=1,
+    )
+
+    assert result.reason == "codex-sync-failed"
+    assert result.exit_code == 1
+    assert result.active_account_index == 1
+    assert switch_service.calls == [(1, "watch-auto")]
+    assert notifications[-1].kind == "codex-sync-failed"
+    assert "switchgpt codex-sync" in notifications[-1].message
+    assert history_store.events[-1].result == "codex-sync-failed"
+
+
 def test_run_enters_reauth_flow_and_resumes_monitoring() -> None:
     notifications = []
     managed_browser = FakeManagedBrowser(
@@ -302,6 +348,42 @@ def test_run_enters_reauth_flow_and_resumes_monitoring() -> None:
     assert any(event.kind == "resume-succeeded" for event in notifications)
     assert history_store.events[-2].result == "reauth-started"
     assert history_store.events[-1].result == "resume-succeeded"
+
+
+def test_watch_reauth_codex_sync_failure_exits_non_zero() -> None:
+    notifications = []
+    managed_browser = FakeManagedBrowser(detections=[LimitState.LIMIT_DETECTED])
+    switch_service = FakeSwitchService(
+        failures={1: ReauthRequiredError("Account slot 1 likely needs reauthentication.")}
+    )
+    history_store = FakeHistoryStore()
+    service = WatchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        managed_browser=managed_browser,
+        switch_service=switch_service,
+        registration_service=FakeRegistrationService(
+            error=CodexAuthSyncFailedError(
+                "Codex auth sync failed after reauthentication. Run `switchgpt codex-sync` to repair."
+            )
+        ),
+        history_store=history_store,
+        poll_interval_seconds=0.0,
+    )
+
+    result = service.run(
+        notify=notifications.append,
+        sleep_fn=lambda _: None,
+        stop_after_cycles=1,
+    )
+
+    assert result.reason == "codex-sync-failed"
+    assert result.exit_code == 1
+    assert result.active_account_index == 1
+    assert notifications[-1].kind == "codex-sync-failed"
+    assert history_store.events[-1].result == "codex-sync-failed"
 
 
 def test_run_records_reauth_failure_and_stops_when_reauth_is_interrupted() -> None:

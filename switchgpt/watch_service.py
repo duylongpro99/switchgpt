@@ -3,7 +3,12 @@ from datetime import UTC, datetime
 import time
 
 from .diagnostics import DiagnosticEvent, redact_text
-from .errors import ManagedBrowserError, ReauthRequiredError, SwitchError
+from .errors import (
+    CodexAuthSyncFailedError,
+    ManagedBrowserError,
+    ReauthRequiredError,
+    SwitchError,
+)
 from .models import LimitState
 from .switch_history import SwitchEvent
 
@@ -97,6 +102,13 @@ class WatchService:
                         result = self._switch_service.switch_to(
                             account.index, mode="watch-auto"
                         )
+                    except CodexAuthSyncFailedError as exc:
+                        return self._finish_codex_sync_failure(
+                            notify,
+                            previous_active_index=active_index,
+                            active_index=account.index,
+                            message=str(exc),
+                        )
                     except ReauthRequiredError:
                         try:
                             active_index = self._handle_reauth_required(
@@ -104,6 +116,13 @@ class WatchService:
                                 active_index=active_index,
                                 target_index=account.index,
                                 page=page,
+                            )
+                        except CodexAuthSyncFailedError as exc:
+                            return self._finish_codex_sync_failure(
+                                notify,
+                                previous_active_index=active_index,
+                                active_index=account.index,
+                                message=str(exc),
                             )
                         except KeyboardInterrupt:
                             self._record_reauth_failure(
@@ -206,6 +225,27 @@ class WatchService:
             )
         )
         return WatchRunResult("browser-runtime-failure", 1, active_index)
+
+    def _finish_codex_sync_failure(
+        self,
+        notify,
+        *,
+        previous_active_index: int | None,
+        active_index: int | None,
+        message: str,
+    ) -> WatchRunResult:
+        self._emit(notify, "codex-sync-failed", message, account_index=active_index)
+        self._history_store.append(
+            SwitchEvent(
+                occurred_at=datetime.now(UTC),
+                from_account_index=previous_active_index,
+                to_account_index=active_index,
+                mode="watch-auto",
+                result="codex-sync-failed",
+                message=redact_text(message) or message,
+            )
+        )
+        return WatchRunResult("codex-sync-failed", 1, active_index)
 
     def _finish_user_interrupted(self, notify, active_index: int | None) -> WatchRunResult:
         message = "Stopped watching for usage limits."

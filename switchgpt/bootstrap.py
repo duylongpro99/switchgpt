@@ -2,6 +2,11 @@ from dataclasses import dataclass
 import platform
 
 from .account_store import AccountStore
+from .codex_auth_sync import (
+    CodexAuthSyncService,
+    CodexEnvAuthTarget,
+    CodexFileAuthTarget,
+)
 from .config import Settings
 from .doctor_service import DoctorService
 from .managed_browser import ManagedBrowser
@@ -43,7 +48,23 @@ def build_registration_service(runtime: Runtime | None = None) -> RegistrationSe
         base_url=runtime.settings.chatgpt_base_url,
         profile_dir=runtime.settings.managed_profile_dir,
     )
-    return RegistrationService(runtime.account_store, runtime.secret_store, browser_client)
+    return RegistrationService(
+        runtime.account_store,
+        runtime.secret_store,
+        browser_client,
+        codex_auth_sync=build_codex_auth_sync_service(runtime),
+    )
+
+
+def build_codex_auth_sync_service(
+    runtime: Runtime | None = None,
+) -> CodexAuthSyncService:
+    runtime = build_runtime() if runtime is None else runtime
+    return CodexAuthSyncService(
+        file_target=CodexFileAuthTarget(),
+        env_target=CodexEnvAuthTarget(),
+        account_store=runtime.account_store,
+    )
 
 
 def build_status_service(
@@ -79,6 +100,7 @@ def build_switch_service(runtime: Runtime | None = None) -> SwitchService:
         runtime.secret_store,
         runtime.managed_browser,
         runtime.history_store,
+        codex_auth_sync=build_codex_auth_sync_service(runtime),
     )
 
 
@@ -88,12 +110,7 @@ def build_watch_service(
     registration_service: RegistrationService | None = None,
 ) -> WatchService:
     runtime = build_runtime() if runtime is None else runtime
-    switch_service = SwitchService(
-        runtime.account_store,
-        runtime.secret_store,
-        runtime.managed_browser,
-        runtime.history_store,
-    )
+    switch_service = build_switch_service(runtime)
     if registration_service is None:
         registration_service = build_registration_service(runtime)
     return WatchService(

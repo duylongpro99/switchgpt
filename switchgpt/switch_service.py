@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from .codex_auth_sync import raise_for_failed_sync
 from .diagnostics import redact_text
-from .errors import ReauthRequiredError, SwitchError
+from .errors import CodexAuthSyncFailedError, ReauthRequiredError, SwitchError
 from .switch_history import SwitchEvent
 
 
@@ -13,11 +14,20 @@ class SwitchResult:
 
 
 class SwitchService:
-    def __init__(self, account_store, secret_store, managed_browser, history_store) -> None:
+    def __init__(
+        self,
+        account_store,
+        secret_store,
+        managed_browser,
+        history_store,
+        *,
+        codex_auth_sync=None,
+    ) -> None:
         self._account_store = account_store
         self._secret_store = secret_store
         self._managed_browser = managed_browser
         self._history_store = history_store
+        self._codex_auth_sync = codex_auth_sync
 
     def switch_next(self, *, mode: str = "auto-target") -> SwitchResult:
         occurred_at = datetime.now(UTC)
@@ -102,6 +112,11 @@ class SwitchService:
                 )
 
             self._account_store.save_runtime_state(account.index, occurred_at)
+            self._sync_active_slot_or_raise(
+                account=account,
+                secret=secret,
+                occurred_at=occurred_at,
+            )
         except Exception as exc:
             if not event_recorded and account_index is not None:
                 self._append_event(
@@ -123,6 +138,24 @@ class SwitchService:
             message=None,
         )
         return SwitchResult(account=account, mode=mode)
+
+    def _sync_active_slot_or_raise(self, *, account, secret, occurred_at: datetime) -> None:
+        if self._codex_auth_sync is None:
+            return
+        result = self._codex_auth_sync.sync_active_slot(
+            active_slot=account.index,
+            email=account.email,
+            session_token=secret.session_token,
+            csrf_token=secret.csrf_token,
+            occurred_at=occurred_at,
+        )
+        try:
+            raise_for_failed_sync(result)
+        except CodexAuthSyncFailedError as exc:
+            raise CodexAuthSyncFailedError(
+                "Codex auth sync failed after switch. Run `switchgpt codex-sync` to repair.",
+                failure_class=exc.failure_class,
+            ) from exc
 
     def _success_result_for_mode(self, mode: str) -> str:
         return "switch-succeeded" if mode == "watch-auto" else "success"

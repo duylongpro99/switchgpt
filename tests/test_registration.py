@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 
 from switchgpt.models import AccountRecord, AccountState
-from switchgpt.errors import BrowserRegistrationError
+from switchgpt.errors import BrowserRegistrationError, CodexAuthSyncFailedError
 from switchgpt.playwright_client import BrowserRegistrationClient
 from switchgpt.registration import RegistrationResult, RegistrationService
 from switchgpt.secret_store import SessionSecret
@@ -38,6 +38,97 @@ def test_add_registration_writes_secret_before_metadata(tmp_path) -> None:
         ("secret", "switchgpt_account_0", "token-1"),
         ("metadata", 0, "account1@example.com"),
     ]
+
+
+def test_add_runs_codex_sync_after_successful_persist() -> None:
+    events = []
+
+    class FakeSyncService:
+        def sync_active_slot(self, **kwargs):
+            events.append(("sync", kwargs["active_slot"], kwargs["occurred_at"]))
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "ok",
+                    "method": "file",
+                    "failure_class": None,
+                    "message": None,
+                },
+            )()
+
+    class FakeSecretStore:
+        def write(self, key, secret) -> None:
+            events.append(("secret", key, secret.session_token))
+
+    class FakeAccountStore:
+        def next_empty_slot(self) -> int:
+            return 0
+
+        def save_record(self, record) -> None:
+            events.append(("metadata", record.index, record.last_reauth_at))
+
+    service = RegistrationService(
+        FakeAccountStore(),
+        FakeSecretStore(),
+        FakeBrowserClient(),
+        codex_auth_sync=FakeSyncService(),
+    )
+
+    record = service.add()
+
+    assert record.index == 0
+    assert [item[:2] for item in events] == [
+        ("secret", "switchgpt_account_0"),
+        ("metadata", 0),
+        ("sync", 0),
+    ]
+    assert events[1][2] == events[2][2]
+
+
+def test_add_raises_strict_codex_sync_failure_with_repair_guidance_after_persist() -> None:
+    class FakeSecretStore:
+        def write(self, key, secret) -> None:
+            del key, secret
+
+    class FakeAccountStore:
+        def __init__(self) -> None:
+            self.saved = None
+
+        def next_empty_slot(self) -> int:
+            return 0
+
+        def save_record(self, record) -> None:
+            self.saved = record
+
+    class FakeSyncService:
+        def sync_active_slot(self, **kwargs):
+            del kwargs
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "failed",
+                    "method": None,
+                    "failure_class": "codex-auth-fallback-failed",
+                    "message": "env projection failed",
+                },
+            )()
+
+    account_store = FakeAccountStore()
+    service = RegistrationService(
+        account_store,
+        FakeSecretStore(),
+        FakeBrowserClient(),
+        codex_auth_sync=FakeSyncService(),
+    )
+
+    with pytest.raises(
+        CodexAuthSyncFailedError, match="Run `switchgpt codex-sync` to repair"
+    ):
+        service.add()
+
+    assert account_store.saved is not None
 
 
 def test_add_rolls_back_secret_when_metadata_write_fails(tmp_path) -> None:
@@ -169,6 +260,75 @@ def test_reauth_restores_old_secret_when_metadata_save_fails() -> None:
         session_token="old",
         csrf_token="old",
     )
+
+
+def test_reauth_runs_codex_sync_after_successful_persist() -> None:
+    events = []
+
+    class FakeBrowserClient:
+        def reauth(self, existing_email: str) -> RegistrationResult:
+            assert existing_email == "account1@example.com"
+            return RegistrationResult(
+                email="account1@example.com",
+                secret=SessionSecret(session_token="new", csrf_token="csrf"),
+                captured_at=datetime(2026, 4, 16, 8, 45, tzinfo=UTC),
+            )
+
+    class FakeSecretStore:
+        def read(self, key):
+            assert key == "switchgpt_account_0"
+            return SessionSecret(session_token="old", csrf_token="old")
+
+        def replace(self, key, secret):
+            events.append(("secret", key, secret.session_token))
+
+    class FakeAccountStore:
+        def get_record(self, index: int) -> AccountRecord:
+            assert index == 0
+            return AccountRecord(
+                index=0,
+                email="account1@example.com",
+                keychain_key="switchgpt_account_0",
+                registered_at=datetime(2026, 4, 16, 8, 30, tzinfo=UTC),
+                last_reauth_at=datetime(2026, 4, 16, 8, 30, tzinfo=UTC),
+                last_validated_at=datetime(2026, 4, 16, 8, 30, tzinfo=UTC),
+                status=AccountState.REGISTERED,
+                last_error=None,
+            )
+
+        def save_record(self, record) -> None:
+            events.append(("metadata", record.index, record.last_reauth_at))
+
+    class FakeSyncService:
+        def sync_active_slot(self, **kwargs):
+            events.append(("sync", kwargs["active_slot"], kwargs["occurred_at"]))
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "ok",
+                    "method": "file",
+                    "failure_class": None,
+                    "message": None,
+                },
+            )()
+
+    service = RegistrationService(
+        FakeAccountStore(),
+        FakeSecretStore(),
+        FakeBrowserClient(),
+        codex_auth_sync=FakeSyncService(),
+    )
+
+    record = service.reauth(0)
+
+    assert record.index == 0
+    assert [item[:2] for item in events] == [
+        ("secret", "switchgpt_account_0"),
+        ("metadata", 0),
+        ("sync", 0),
+    ]
+    assert events[1][2] == events[2][2]
 
 
 def test_reauth_in_managed_workspace_refreshes_secret_and_metadata() -> None:

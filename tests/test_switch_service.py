@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from switchgpt.errors import ReauthRequiredError, SwitchError
+from switchgpt.errors import CodexAuthSyncFailedError, ReauthRequiredError, SwitchError
 from switchgpt.models import AccountRecord, AccountState
 from switchgpt.secret_store import SessionSecret
 from switchgpt.switch_history import SwitchEvent
@@ -122,6 +122,88 @@ def test_switch_to_explicit_account_updates_active_state_and_history() -> None:
     assert result.mode == "explicit-target"
     assert service._account_store.saved_runtime_state[0] == 1
     assert service._history_store.events[-1].result == "success"
+
+
+def test_switch_to_runs_codex_sync_after_runtime_state_save() -> None:
+    events = []
+
+    class FakeSyncService:
+        def sync_active_slot(self, **kwargs):
+            events.append(("sync", kwargs["active_slot"], kwargs["occurred_at"]))
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "ok",
+                    "method": "file",
+                    "failure_class": None,
+                    "message": None,
+                },
+            )()
+
+    class RecordingAccountStore(FakeAccountStore):
+        def save_runtime_state(self, active_account_index, switched_at):
+            events.append(("runtime-state", active_account_index, switched_at))
+            super().save_runtime_state(active_account_index, switched_at)
+
+    service = SwitchService(
+        account_store=RecordingAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        secret_store=FakeSecretStore(
+            SessionSecret(session_token="session-2", csrf_token="csrf-2")
+        ),
+        managed_browser=FakeManagedBrowser(authenticated=True),
+        history_store=FakeHistoryStore(),
+        codex_auth_sync=FakeSyncService(),
+    )
+
+    result = service.switch_to(index=1)
+
+    assert result.account.index == 1
+    assert [item[:2] for item in events] == [
+        ("runtime-state", 1),
+        ("sync", 1),
+    ]
+    assert events[0][2] == events[1][2]
+
+
+def test_switch_to_raises_strict_codex_sync_failure_with_repair_guidance() -> None:
+    class FakeSyncService:
+        def sync_active_slot(self, **kwargs):
+            del kwargs
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "failed",
+                    "method": None,
+                    "failure_class": "codex-auth-fallback-failed",
+                    "message": "env projection failed",
+                },
+            )()
+
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        secret_store=FakeSecretStore(
+            SessionSecret(session_token="session-2", csrf_token="csrf-2")
+        ),
+        managed_browser=FakeManagedBrowser(authenticated=True),
+        history_store=FakeHistoryStore(),
+        codex_auth_sync=FakeSyncService(),
+    )
+
+    with pytest.raises(
+        CodexAuthSyncFailedError, match="Run `switchgpt codex-sync` to repair"
+    ):
+        service.switch_to(index=1)
+
+    assert service._account_store.saved_runtime_state[0] == 1
+    assert service._history_store.events[-1].result == "failure"
 
 
 def test_switch_to_records_watch_auto_mode_for_automation_success() -> None:
