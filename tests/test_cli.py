@@ -81,8 +81,18 @@ def test_build_registration_service_passes_managed_profile_dir_to_browser_client
             captured["profile_dir"] = profile_dir
 
     class FakeRegistrationService:
-        def __init__(self, account_store, secret_store, browser_client) -> None:
+        def __init__(
+            self,
+            account_store,
+            secret_store,
+            browser_client,
+            *,
+            codex_auth_sync=None,
+        ) -> None:
             captured["service_args"] = (account_store, secret_store, browser_client)
+            captured["codex_auth_sync"] = codex_auth_sync
+
+    sentinel_sync = object()
 
     monkeypatch.setattr(
         "switchgpt.bootstrap.BrowserRegistrationClient",
@@ -91,6 +101,10 @@ def test_build_registration_service_passes_managed_profile_dir_to_browser_client
     monkeypatch.setattr(
         "switchgpt.bootstrap.RegistrationService",
         FakeRegistrationService,
+    )
+    monkeypatch.setattr(
+        "switchgpt.bootstrap.build_codex_auth_sync_service",
+        lambda runtime_arg=None: sentinel_sync if runtime_arg is runtime else None,
     )
 
     from switchgpt.bootstrap import build_registration_service
@@ -101,6 +115,19 @@ def test_build_registration_service_passes_managed_profile_dir_to_browser_client
     assert captured["profile_dir"] == "profile-dir"
     assert captured["service_args"][0] is runtime.account_store
     assert captured["service_args"][1] is runtime.secret_store
+    assert captured["codex_auth_sync"] is sentinel_sync
+
+
+def test_build_switch_service_uses_bootstrap_wiring(monkeypatch) -> None:
+    sentinel_service = object()
+    monkeypatch.setattr(
+        "switchgpt.cli.bootstrap.build_switch_service",
+        lambda: sentinel_service,
+    )
+
+    from switchgpt.cli import build_switch_service
+
+    assert build_switch_service() is sentinel_service
 
 
 def test_status_command_is_registered(monkeypatch, tmp_path) -> None:
@@ -573,6 +600,7 @@ def test_build_watch_service_wires_registration_service(monkeypatch) -> None:
         },
     )()
     registration_service = object()
+    codex_auth_sync = object()
     captured = {}
 
     monkeypatch.setattr(
@@ -588,14 +616,28 @@ def test_build_watch_service_wires_registration_service(monkeypatch) -> None:
         fake_build_registration_service,
     )
 
+    monkeypatch.setattr(
+        "switchgpt.bootstrap.build_codex_auth_sync_service",
+        lambda runtime_arg=None: codex_auth_sync if runtime_arg is runtime else None,
+    )
+
     class FakeSwitchService:
-        def __init__(self, account_store, secret_store_arg, managed_browser_arg, history_store_arg):
+        def __init__(
+            self,
+            account_store,
+            secret_store_arg,
+            managed_browser_arg,
+            history_store_arg,
+            *,
+            codex_auth_sync=None,
+        ):
             captured["switch_args"] = (
                 account_store,
                 secret_store_arg,
                 managed_browser_arg,
                 history_store_arg,
             )
+            captured["switch_codex_auth_sync"] = codex_auth_sync
 
     class FakeWatchService:
         def __init__(
@@ -628,6 +670,7 @@ def test_build_watch_service_wires_registration_service(monkeypatch) -> None:
         managed_browser,
         history_store,
     )
+    assert captured["switch_codex_auth_sync"] is codex_auth_sync
     assert captured["registration_runtime"] is runtime
     assert captured["watch_args"]["account_store"] is store
     assert captured["watch_args"]["managed_browser"] is managed_browser

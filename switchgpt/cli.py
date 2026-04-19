@@ -33,19 +33,8 @@ def build_managed_browser():
     return bootstrap.build_managed_browser()
 
 
-def _build_switch_components():
-    runtime = bootstrap.build_runtime()
-    return (
-        runtime.account_store,
-        runtime.secret_store,
-        runtime.managed_browser,
-        runtime.history_store,
-    )
-
-
 def build_switch_service():
-    store, secret_store, managed_browser, history_store = _build_switch_components()
-    return SwitchService(store, secret_store, managed_browser, history_store)
+    return bootstrap.build_switch_service()
 
 
 def build_watch_service():
