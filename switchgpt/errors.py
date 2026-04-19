@@ -40,3 +40,7 @@ class DoctorCheckError(SwitchGptError):
 
 class CodexAuthSyncFailedError(SwitchGptError):
     """Raised when strict Codex auth sync cannot complete."""
+
+    def __init__(self, message: str, *, failure_class: str | None = None) -> None:
+        super().__init__(message)
+        self.failure_class = failure_class
