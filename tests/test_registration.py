@@ -338,7 +338,6 @@ def test_browser_client_rejects_ambiguous_authenticated_state() -> None:
 
     class FakeBody:
         def inner_text(self) -> str:
-            events.append("body_text")
             return "Please log in"
 
     class FakePage:
@@ -506,12 +505,15 @@ def test_browser_client_registers_and_closes_browser_after_email_capture(monkeyp
         "input",
         "cookies",
         "body_text",
+        "body_text",
         "close",
         "exit",
     ]
 
 
-def test_browser_client_register_accepts_session_cookie_on_auth_error_route(monkeypatch) -> None:
+def test_browser_client_register_rejects_auth_error_route_without_verified_session(
+    monkeypatch,
+) -> None:
     client = BrowserRegistrationClient(base_url="https://chatgpt.com")
 
     class FakeBody:
@@ -572,9 +574,8 @@ def test_browser_client_register_accepts_session_cookie_on_auth_error_route(monk
     monkeypatch.setattr("builtins.input", lambda prompt="": None)
     monkeypatch.setattr("switchgpt.playwright_client.sync_playwright", lambda: FakePlaywright())
 
-    result = client.register()
-
-    assert result.secret.session_token == "token-1"
+    with pytest.raises(BrowserRegistrationError, match="Could not verify authenticated state"):
+        client.register()
 
 
 def test_browser_client_capture_existing_session_uses_session_api_email_when_body_has_none() -> None:
@@ -636,6 +637,12 @@ def test_browser_client_register_retries_capture_when_auth_error_route_persists(
 
         def wait_for_timeout(self, ms: int) -> None:
             events.append(f"wait:{ms}")
+
+        def evaluate(self, script: str):
+            assert "/api/auth/session" in script
+            if self.url == "https://chatgpt.com/":
+                return {"user": {"email": "account1@example.com"}}
+            return None
 
         def locator(self, selector: str):
             assert selector == "body"
@@ -700,7 +707,6 @@ def test_browser_client_register_retries_capture_when_auth_error_route_persists(
         "goto:https://chatgpt.com",
         "wait:1000",
         "cookies:2",
-        "body_text",
         "close",
     ]
 
@@ -1038,6 +1044,76 @@ def test_browser_client_register_uses_configured_browser_channel(monkeypatch) ->
     assert launch_kwargs == {"headless": False, "channel": "chrome"}
 
 
+def test_browser_client_register_falls_back_to_default_launch_when_channel_unavailable(
+    monkeypatch,
+) -> None:
+    client = BrowserRegistrationClient(base_url="https://chatgpt.com")
+    launch_attempts: list[dict[str, object]] = []
+
+    class FakeBody:
+        def inner_text(self) -> str:
+            return "ChatGPT signed in as account1@example.com"
+
+    class FakePage:
+        url = "https://chatgpt.com/"
+
+        def goto(self, url: str) -> None:
+            self.url = url
+
+        def locator(self, selector: str):
+            assert selector == "body"
+            return FakeBody()
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self._page = FakePage()
+
+        def new_page(self):
+            return self._page
+
+        def cookies(self):
+            return [
+                {"name": "__Secure-next-auth.session-token", "value": "token-1"},
+                {"name": "__Host-next-auth.csrf-token", "value": "csrf-1"},
+            ]
+
+    class FakeBrowser:
+        def new_context(self):
+            return FakeContext()
+
+        def close(self) -> None:
+            return None
+
+    class FakeChromium:
+        def launch(self, **kwargs):
+            launch_attempts.append(kwargs.copy())
+            if kwargs.get("channel") == "chrome":
+                raise RuntimeError("channel unavailable")
+            return FakeBrowser()
+
+    class FakePlaywright:
+        def __init__(self) -> None:
+            self.chromium = FakeChromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.delenv("SWITCHGPT_BROWSER_CHANNEL", raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt="": None)
+    monkeypatch.setattr("switchgpt.playwright_client.sync_playwright", lambda: FakePlaywright())
+
+    result = client.register()
+
+    assert result.secret.session_token == "token-1"
+    assert launch_attempts == [
+        {"headless": False, "channel": "chrome"},
+        {"headless": False},
+    ]
+
+
 def test_browser_client_register_uses_persistent_context_when_profile_dir_is_configured(
     monkeypatch,
     tmp_path,
@@ -1265,6 +1341,45 @@ def test_browser_client_closes_browser_when_registration_fails(monkeypatch) -> N
     monkeypatch.setattr("switchgpt.playwright_client.sync_playwright", lambda: FakePlaywright())
 
     with pytest.raises(BrowserRegistrationError, match="Could not verify authenticated state"):
+        client.register()
+
+    assert "close" in events
+    assert events.index("close") < events.index("exit")
+
+
+def test_browser_client_closes_browser_when_opening_context_fails(monkeypatch) -> None:
+    client = BrowserRegistrationClient(base_url="https://chatgpt.com")
+    events: list[str] = []
+
+    class FakeBrowser:
+        def new_context(self):
+            events.append("new_context")
+            raise RuntimeError("context failed")
+
+        def close(self) -> None:
+            events.append("close")
+
+    class FakeChromium:
+        def launch(self, headless: bool):
+            assert headless is False
+            events.append("launch")
+            return FakeBrowser()
+
+    class FakePlaywright:
+        def __init__(self) -> None:
+            self.chromium = FakeChromium()
+
+        def __enter__(self):
+            events.append("enter")
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            events.append("exit")
+            return False
+
+    monkeypatch.setattr("switchgpt.playwright_client.sync_playwright", lambda: FakePlaywright())
+
+    with pytest.raises(RuntimeError, match="context failed"):
         client.register()
 
     assert "close" in events

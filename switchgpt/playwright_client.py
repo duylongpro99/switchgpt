@@ -150,7 +150,11 @@ class BrowserRegistrationClient:
         return False
 
     def _assert_authenticated_state(self, page, *, cookies=None) -> None:
-        if cookies is not None and self._has_session_cookie(cookies):
+        if (
+            cookies is not None
+            and self._has_session_cookie(cookies)
+            and self._has_verified_session(page)
+        ):
             return
 
         url = getattr(page, "url", "")
@@ -187,7 +191,7 @@ class BrowserRegistrationClient:
         return None
 
     def _discover_email(self, page) -> str | None:
-        session_email = self._discover_email_from_session_api(page)
+        session_email = self._session_email(page)
         if session_email is not None:
             return session_email
         body_text = self._page_body_text(page)
@@ -196,7 +200,7 @@ class BrowserRegistrationClient:
             return None
         return self._normalize_email(match.group(0))
 
-    def _discover_email_from_session_api(self, page) -> str | None:
+    def _session_payload(self, page) -> dict | None:
         evaluator = getattr(page, "evaluate", None)
         if not callable(evaluator):
             return None
@@ -219,6 +223,19 @@ class BrowserRegistrationClient:
         except Exception:
             return None
         if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def _has_verified_session(self, page) -> bool:
+        payload = self._session_payload(page)
+        if payload is None:
+            return False
+        user = payload.get("user")
+        return isinstance(user, dict)
+
+    def _session_email(self, page) -> str | None:
+        payload = self._session_payload(page)
+        if payload is None:
             return None
         user = payload.get("user")
         if not isinstance(user, dict):
@@ -254,10 +271,12 @@ class BrowserRegistrationClient:
     def register(self) -> RegistrationResult:
         self._assert_visible_mode(headless=False)
         with sync_playwright() as playwright:
-            browser = None if self.profile_dir is not None else self._launch_browser(playwright)
-            context = self._open_registration_context(playwright, browser)
-            self._apply_stealth_context_overrides(context)
+            browser = None
+            context = None
             try:
+                browser = None if self.profile_dir is not None else self._launch_browser(playwright)
+                context = self._open_registration_context(playwright, browser)
+                self._apply_stealth_context_overrides(context)
                 page = context.new_page()
                 page.goto(self.base_url)
                 last_error = None
@@ -350,10 +369,11 @@ class BrowserRegistrationClient:
                     "Could not verify authenticated state after login."
                 )
             finally:
-                try:
-                    context.close()
-                except Exception:
-                    pass
+                if context is not None:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
                 if browser is not None:
                     browser.close()
 
