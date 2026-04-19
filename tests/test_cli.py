@@ -577,6 +577,8 @@ def test_codex_sync_command_exits_non_zero_when_sync_result_failed(monkeypatch) 
                 {
                     "outcome": "failed",
                     "method": None,
+                    "failure_class": "codex-auth-write-failed",
+                    "message": "Session token [REDACTED] rejected; run switchgpt codex-sync after reauth.",
                 },
             )()
 
@@ -589,6 +591,10 @@ def test_codex_sync_command_exits_non_zero_when_sync_result_failed(monkeypatch) 
 
     assert result.exit_code == 1
     assert "Codex auth sync: failed." in result.stdout
+    assert (
+        "Session token [REDACTED] rejected; run switchgpt codex-sync after reauth."
+        in result.stderr
+    )
 
 
 def test_codex_sync_command_reports_domain_errors_cleanly(monkeypatch) -> None:

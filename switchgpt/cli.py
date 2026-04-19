@@ -136,6 +136,8 @@ def codex_sync() -> None:
         method_suffix = f" ({result.method})" if result.method is not None else ""
         print(f"Codex auth sync: {result.outcome}{method_suffix}.")
         if result.outcome == "failed":
+            detail = result.message or result.failure_class or "Codex auth sync failed."
+            typer.echo(detail, err=True)
             raise typer.Exit(code=1)
     except SwitchGptError as exc:
         typer.echo(str(exc), err=True)
