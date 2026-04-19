@@ -32,11 +32,15 @@ def test_add_registration_writes_secret_before_metadata(tmp_path) -> None:
         def save_record(self, record) -> None:
             store.append(("metadata", record.index, record.email))
 
+        def save_runtime_state(self, active_account_index, switched_at) -> None:
+            store.append(("runtime-state", active_account_index, switched_at))
+
     service = RegistrationService(FakeAccountStore(), FakeSecretStore(), FakeBrowserClient())
     service.add()
     assert store == [
         ("secret", "switchgpt_account_0", "token-1"),
         ("metadata", 0, "account1@example.com"),
+        ("runtime-state", 0, datetime(2026, 4, 16, 8, 30, tzinfo=UTC)),
     ]
 
 
@@ -68,6 +72,9 @@ def test_add_runs_codex_sync_after_successful_persist() -> None:
         def save_record(self, record) -> None:
             events.append(("metadata", record.index, record.last_reauth_at))
 
+        def save_runtime_state(self, active_account_index, switched_at) -> None:
+            events.append(("runtime-state", active_account_index, switched_at))
+
     service = RegistrationService(
         FakeAccountStore(),
         FakeSecretStore(),
@@ -81,9 +88,10 @@ def test_add_runs_codex_sync_after_successful_persist() -> None:
     assert [item[:2] for item in events] == [
         ("secret", "switchgpt_account_0"),
         ("metadata", 0),
+        ("runtime-state", 0),
         ("sync", 0),
     ]
-    assert events[1][2] == events[2][2]
+    assert events[1][2] == events[2][2] == events[3][2]
 
 
 def test_add_raises_strict_codex_sync_failure_with_repair_guidance_after_persist() -> None:
@@ -94,12 +102,16 @@ def test_add_raises_strict_codex_sync_failure_with_repair_guidance_after_persist
     class FakeAccountStore:
         def __init__(self) -> None:
             self.saved = None
+            self.runtime_state = None
 
         def next_empty_slot(self) -> int:
             return 0
 
         def save_record(self, record) -> None:
             self.saved = record
+
+        def save_runtime_state(self, active_account_index, switched_at) -> None:
+            self.runtime_state = (active_account_index, switched_at)
 
     class FakeSyncService:
         def sync_active_slot(self, **kwargs):
@@ -129,6 +141,10 @@ def test_add_raises_strict_codex_sync_failure_with_repair_guidance_after_persist
         service.add()
 
     assert account_store.saved is not None
+    assert account_store.runtime_state == (
+        0,
+        datetime(2026, 4, 16, 8, 30, tzinfo=UTC),
+    )
 
 
 def test_add_rolls_back_secret_when_metadata_write_fails(tmp_path) -> None:
@@ -299,6 +315,9 @@ def test_reauth_runs_codex_sync_after_successful_persist() -> None:
         def save_record(self, record) -> None:
             events.append(("metadata", record.index, record.last_reauth_at))
 
+        def save_runtime_state(self, active_account_index, switched_at) -> None:
+            events.append(("runtime-state", active_account_index, switched_at))
+
     class FakeSyncService:
         def sync_active_slot(self, **kwargs):
             events.append(("sync", kwargs["active_slot"], kwargs["occurred_at"]))
@@ -326,9 +345,10 @@ def test_reauth_runs_codex_sync_after_successful_persist() -> None:
     assert [item[:2] for item in events] == [
         ("secret", "switchgpt_account_0"),
         ("metadata", 0),
+        ("runtime-state", 0),
         ("sync", 0),
     ]
-    assert events[1][2] == events[2][2]
+    assert events[1][2] == events[2][2] == events[3][2]
 
 
 def test_reauth_in_managed_workspace_refreshes_secret_and_metadata() -> None:
@@ -357,6 +377,7 @@ def test_reauth_in_managed_workspace_refreshes_secret_and_metadata() -> None:
     class FakeAccountStore:
         def __init__(self) -> None:
             self.saved = None
+            self.runtime_state = None
 
         def get_record(self, index: int) -> AccountRecord:
             assert index == 0
@@ -364,6 +385,9 @@ def test_reauth_in_managed_workspace_refreshes_secret_and_metadata() -> None:
 
         def save_record(self, record) -> None:
             self.saved = record
+
+        def save_runtime_state(self, active_account_index, switched_at) -> None:
+            self.runtime_state = (active_account_index, switched_at)
 
     class FakeSecretStore:
         def __init__(self) -> None:
@@ -387,6 +411,10 @@ def test_reauth_in_managed_workspace_refreshes_secret_and_metadata() -> None:
         SessionSecret(session_token="new-token", csrf_token="csrf"),
     )
     assert account_store.saved == record
+    assert account_store.runtime_state == (
+        0,
+        datetime(2026, 4, 17, 12, 0, tzinfo=UTC),
+    )
     assert record.status is AccountState.REGISTERED
     assert record.last_error is None
     assert record.last_reauth_at == datetime(2026, 4, 17, 12, 0, tzinfo=UTC)
@@ -466,12 +494,16 @@ def test_add_in_managed_workspace_writes_secret_and_metadata() -> None:
     class FakeAccountStore:
         def __init__(self) -> None:
             self.saved = None
+            self.runtime_state = None
 
         def next_empty_slot(self) -> int:
             return 1
 
         def save_record(self, record) -> None:
             self.saved = record
+
+        def save_runtime_state(self, active_account_index, switched_at) -> None:
+            self.runtime_state = (active_account_index, switched_at)
 
     account_store = FakeAccountStore()
     secret_store = FakeSecretStore()
@@ -485,6 +517,10 @@ def test_add_in_managed_workspace_writes_secret_and_metadata() -> None:
         ("switchgpt_account_1", SessionSecret(session_token="token-1", csrf_token="csrf-1"))
     ]
     assert account_store.saved == record
+    assert account_store.runtime_state == (
+        1,
+        datetime(2026, 4, 17, 12, 0, tzinfo=UTC),
+    )
 
 
 def test_browser_client_requires_visible_browser_when_register_called() -> None:

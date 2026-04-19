@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 import pytest
 
 from switchgpt.codex_auth_sync import (
+    CodexEnvAuthTarget,
+    CodexFileAuthTarget,
     CodexAuthSyncService,
     CodexSyncResult,
     raise_for_failed_sync,
@@ -93,6 +95,28 @@ def test_sync_returns_failed_when_both_targets_fail() -> None:
     assert result.outcome == "failed"
     assert result.method is None
     assert result.failure_class == "codex-auth-fallback-failed"
+
+
+def test_sync_with_default_targets_fails_loudly_when_no_projection_backend_exists() -> None:
+    service = CodexAuthSyncService(
+        file_target=CodexFileAuthTarget(),
+        env_target=CodexEnvAuthTarget(),
+    )
+
+    result = service.sync_active_slot(
+        active_slot=2,
+        email="account2@example.com",
+        session_token="token-2",
+        csrf_token="csrf-2",
+        occurred_at=datetime(2026, 4, 19, 10, 12, tzinfo=UTC),
+    )
+
+    assert result == CodexSyncResult(
+        outcome="failed",
+        method=None,
+        failure_class="codex-auth-target-missing",
+        message="codex-auth-target-missing",
+    )
 
 
 def test_sync_does_not_fallback_for_unknown_file_target_exceptions() -> None:

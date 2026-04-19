@@ -76,6 +76,10 @@ class RegistrationService:
             with suppress(Exception):
                 self._secret_store.delete(key)
             raise
+        self._account_store.save_runtime_state(
+            active_account_index=record.index,
+            switched_at=record.last_reauth_at,
+        )
         self._sync_active_slot_or_raise(record=record, secret=result.secret)
         return record
 
@@ -129,6 +133,10 @@ class RegistrationService:
                 else:
                     self._secret_store.replace(existing.keychain_key, previous_secret)
             raise
+        self._account_store.save_runtime_state(
+            active_account_index=refreshed.index,
+            switched_at=refreshed.last_reauth_at,
+        )
         self._sync_active_slot_or_raise(record=refreshed, secret=result.secret)
         return refreshed
 

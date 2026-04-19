@@ -150,13 +150,13 @@ class CodexAuthSyncService:
 class CodexFileAuthTarget:
     def apply(self, *, email: str, session_token: str, csrf_token: str | None) -> str:
         del email, session_token, csrf_token
-        return "file"
+        raise RuntimeError("codex-auth-target-missing")
 
 
 class CodexEnvAuthTarget:
     def apply(self, *, email: str, session_token: str, csrf_token: str | None) -> str:
         del email, session_token, csrf_token
-        return "env-fallback"
+        raise RuntimeError("codex-auth-target-missing")
 
 
 def raise_for_failed_sync(result: CodexSyncResult) -> None:
