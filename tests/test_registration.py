@@ -1101,7 +1101,7 @@ def test_browser_client_register_falls_back_to_default_launch_when_channel_unava
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    monkeypatch.delenv("SWITCHGPT_BROWSER_CHANNEL", raising=False)
+    monkeypatch.setenv("SWITCHGPT_BROWSER_CHANNEL", "chrome")
     monkeypatch.setattr("builtins.input", lambda prompt="": None)
     monkeypatch.setattr("switchgpt.playwright_client.sync_playwright", lambda: FakePlaywright())
 
@@ -1280,7 +1280,7 @@ def test_browser_client_candidate_channels_reads_from_dotenv(
     (tmp_path / ".env").write_text("SWITCHGPT_BROWSER_CHANNEL=msedge\n", encoding="utf-8")
     client = BrowserRegistrationClient(base_url="https://chatgpt.com")
 
-    assert client._candidate_channels() == ["msedge"]
+    assert client._candidate_channels() == ["msedge", "chrome", None]
 
 
 def test_browser_client_closes_browser_when_registration_fails(monkeypatch) -> None:
