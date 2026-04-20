@@ -1,5 +1,4 @@
 from datetime import UTC, datetime
-
 import pytest
 
 from switchgpt.codex_auth_sync import (
@@ -256,3 +255,85 @@ def test_raise_for_failed_sync_ignores_non_failed_result() -> None:
             message=None,
         )
     )
+
+
+def test_file_target_writes_codex_auth_file_from_oauth_tokens(tmp_path) -> None:
+    auth_path = tmp_path / "auth.json"
+
+    class FakeManagedBrowser:
+        def __init__(self) -> None:
+            self.prepare_calls = []
+
+        def ensure_runtime(self):
+            return "context", "page"
+
+        def prepare_switch(self, context, page, *, session_token: str, csrf_token: str | None):
+            self.prepare_calls.append((context, page, session_token, csrf_token))
+
+    target = CodexFileAuthTarget(
+        managed_browser=FakeManagedBrowser(),
+        auth_file_path=auth_path,
+    )
+
+    target._run_oauth_code_flow = lambda page, email: {
+        "access_token": "access-token",
+        "refresh_token": "refresh-token",
+        "id_token": _build_id_token(chatgpt_account_id="account-id-123"),
+    }
+
+    method = target.apply(
+        email="account1@example.com",
+        session_token="session-token",
+        csrf_token="csrf-token",
+    )
+
+    payload = auth_path.read_text()
+    assert method == "file"
+    assert '"auth_mode": "chatgpt"' in payload
+    assert '"account_id": "account-id-123"' in payload
+    assert '"access_token": "access-token"' in payload
+    assert '"refresh_token": "refresh-token"' in payload
+
+
+def test_file_target_rejects_id_token_without_chatgpt_account_id(tmp_path) -> None:
+    target = CodexFileAuthTarget(
+        managed_browser=type(
+            "FakeManagedBrowser",
+            (),
+            {
+                "ensure_runtime": lambda self: ("context", "page"),
+                "prepare_switch": lambda self, context, page, *, session_token, csrf_token: None,
+            },
+        )(),
+        auth_file_path=tmp_path / "auth.json",
+    )
+
+    target._run_oauth_code_flow = lambda page, email: {
+        "access_token": "access-token",
+        "refresh_token": "refresh-token",
+        "id_token": _build_id_token(chatgpt_account_id=None),
+    }
+
+    with pytest.raises(RuntimeError, match="codex-auth-verify-failed"):
+        target.apply(
+            email="account1@example.com",
+            session_token="session-token",
+            csrf_token=None,
+        )
+
+
+def _build_id_token(*, chatgpt_account_id: str | None) -> str:
+    import base64
+    import json
+
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
+    payload = {
+        "iss": "https://auth0.openai.com/",
+        "sub": "subject-123",
+        "email": "account1@example.com",
+        "https://api.openai.com/auth": {},
+    }
+    if chatgpt_account_id is not None:
+        payload["https://api.openai.com/auth"]["chatgpt_account_id"] = chatgpt_account_id
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return f"{header}.{body}.signature"

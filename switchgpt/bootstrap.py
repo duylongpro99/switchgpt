@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import platform
+from pathlib import Path
 
 from .account_store import AccountStore
 from .codex_auth_sync import (
@@ -89,7 +90,10 @@ def build_codex_auth_sync_service(
 ) -> CodexAuthSyncService:
     runtime = build_runtime() if runtime is None else runtime
     return CodexAuthSyncService(
-        file_target=CodexFileAuthTarget(),
+        file_target=CodexFileAuthTarget(
+            managed_browser=runtime.managed_browser,
+            auth_file_path=Path.home() / ".codex" / "auth.json",
+        ),
         env_target=CodexEnvAuthTarget(),
         account_store=runtime.account_store,
     )
