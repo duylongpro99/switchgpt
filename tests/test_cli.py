@@ -861,6 +861,30 @@ def test_switch_command_surfaces_codex_sync_failure_with_repair_hint(monkeypatch
     assert "Traceback" not in result.stderr
 
 
+def test_switch_command_surfaces_codex_only_repair_guidance(monkeypatch) -> None:
+    class FakeSwitchService:
+        def switch_to(self, index: int, mode: str = "explicit-target"):
+            assert index == 1
+            assert mode == "explicit-target"
+            raise CodexAuthSyncFailedError(
+                "Codex auth sync failed after switch. Run `codex login` with the target account, then "
+                "`switchgpt import-codex-auth --slot 1` and retry `switchgpt switch --to 1`.",
+                failure_class="codex-auth-source-missing",
+            )
+
+    monkeypatch.setattr("switchgpt.cli.ensure_supported_platform", lambda: None)
+    monkeypatch.setattr(
+        "switchgpt.cli.bootstrap.build_switch_service",
+        lambda: FakeSwitchService(),
+    )
+
+    result = runner.invoke(app, ["switch", "--to", "1"])
+
+    assert result.exit_code == 1
+    assert "switchgpt import-codex-auth --slot 1" in result.stderr
+    assert "switchgpt switch --to 1" in result.stderr
+
+
 def test_switch_command_surfaces_switch_error_cleanly(monkeypatch) -> None:
     class FakeService:
         def switch_to(self, index: int):
