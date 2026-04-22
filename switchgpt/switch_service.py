@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 from .codex_auth_sync import raise_for_failed_sync
 from .diagnostics import redact_text
-from .errors import CodexAuthSyncFailedError, ReauthRequiredError, SwitchError
+from .errors import CodexAuthSyncFailedError, SwitchError
 from .switch_history import SwitchEvent
 
 
@@ -72,7 +72,6 @@ class SwitchService:
     ) -> SwitchResult:
         previous_active_index = None
         occurred_at = datetime.now(UTC)
-        event_recorded = False
         failure_result = "failure"
         try:
             previous_active_index = self._account_store.load().active_account_index
@@ -90,27 +89,6 @@ class SwitchService:
                     f"Stored session secret is missing for slot {account.index}."
                 )
 
-            context, page = self._managed_browser.ensure_runtime()
-            self._managed_browser.prepare_switch(
-                context,
-                page,
-                session_token=secret.session_token,
-                csrf_token=secret.csrf_token,
-            )
-            if not self._managed_browser.is_authenticated(page):
-                self._append_event(
-                    occurred_at=occurred_at,
-                    previous_active_index=previous_active_index,
-                    account_index=account.index,
-                    mode=mode,
-                    result="needs-reauth",
-                    message=f"Account slot {account.index} likely needs reauthentication.",
-                )
-                event_recorded = True
-                raise ReauthRequiredError(
-                    f"Account slot {account.index} likely needs reauthentication."
-                )
-
             self._account_store.save_runtime_state(account.index, occurred_at)
             self._sync_active_slot_or_raise(
                 account=account,
@@ -118,7 +96,7 @@ class SwitchService:
                 occurred_at=occurred_at,
             )
         except Exception as exc:
-            if not event_recorded and account_index is not None:
+            if account_index is not None:
                 self._append_event(
                     occurred_at=occurred_at,
                     previous_active_index=previous_active_index,
@@ -147,13 +125,15 @@ class SwitchService:
             email=account.email,
             session_token=secret.session_token,
             csrf_token=secret.csrf_token,
+            codex_auth_json=getattr(secret, "codex_auth_json", None),
             occurred_at=occurred_at,
         )
         try:
             raise_for_failed_sync(result)
         except CodexAuthSyncFailedError as exc:
             raise CodexAuthSyncFailedError(
-                "Codex auth sync failed after switch. Run `switchgpt codex-sync` to repair.",
+                "Codex auth sync failed after switch. Run `codex login` with the target account, then "
+                f"`switchgpt import-codex-auth --slot {account.index}` and retry `switchgpt switch --to {account.index}`.",
                 failure_class=exc.failure_class,
             ) from exc
 

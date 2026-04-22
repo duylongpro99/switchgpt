@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from switchgpt.errors import CodexAuthSyncFailedError, ReauthRequiredError, SwitchError
+from switchgpt.errors import CodexAuthSyncFailedError, SwitchError
 from switchgpt.models import AccountRecord, AccountState
 from switchgpt.secret_store import SessionSecret
 from switchgpt.switch_history import SwitchEvent
@@ -198,7 +198,8 @@ def test_switch_to_raises_strict_codex_sync_failure_with_repair_guidance() -> No
     )
 
     with pytest.raises(
-        CodexAuthSyncFailedError, match="Run `switchgpt codex-sync` to repair"
+        CodexAuthSyncFailedError,
+        match="retry `switchgpt switch --to 1`",
     ):
         service.switch_to(index=1)
 
@@ -374,45 +375,6 @@ def test_missing_secret_records_bounded_missing_secret_result() -> None:
     assert service._history_store.events[-1].result == "missing-secret"
 
 
-def test_failed_auth_verification_does_not_update_active_account() -> None:
-    service = SwitchService(
-        account_store=FakeAccountStore(
-            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
-            active_account_index=0,
-        ),
-        secret_store=FakeSecretStore(
-            SessionSecret(session_token="session-2", csrf_token=None)
-        ),
-        managed_browser=FakeManagedBrowser(authenticated=False),
-        history_store=FakeHistoryStore(),
-    )
-
-    with pytest.raises(ReauthRequiredError):
-        service.switch_to(index=1)
-
-    assert service._account_store.saved_runtime_state is None
-    assert service._history_store.events[-1].result == "needs-reauth"
-
-
-def test_failed_auth_verification_records_needs_reauth() -> None:
-    service = SwitchService(
-        account_store=FakeAccountStore(
-            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
-            active_account_index=0,
-        ),
-        secret_store=FakeSecretStore(
-            SessionSecret(session_token="session-2", csrf_token=None)
-        ),
-        managed_browser=FakeManagedBrowser(authenticated=False),
-        history_store=FakeHistoryStore(),
-    )
-
-    with pytest.raises(ReauthRequiredError, match="likely needs reauthentication"):
-        service.switch_to(index=1, mode="watch-auto")
-
-    assert service._history_store.events[-1].result == "needs-reauth"
-
-
 def test_missing_secret_records_failure_history_before_raising() -> None:
     service = SwitchService(
         account_store=FakeAccountStore(
@@ -515,17 +477,11 @@ def test_auto_target_metadata_load_failure_records_failure_history_without_targe
 
 
 def test_failure_history_message_is_redacted_before_persistence() -> None:
-    class FailingManagedBrowser(FakeManagedBrowser):
-        def prepare_switch(
-            self,
-            context,
-            page,
-            *,
-            session_token: str,
-            csrf_token: str | None,
-        ) -> None:
+    class FailingSyncService:
+        def sync_active_slot(self, **kwargs):
+            del kwargs
             raise SwitchError(
-                "prepare_switch failed with session_token=abc123 csrf_token=def456"
+                "sync failed with session_token=abc123 csrf_token=def456"
             )
 
     history_store = FakeHistoryStore()
@@ -537,13 +493,14 @@ def test_failure_history_message_is_redacted_before_persistence() -> None:
         secret_store=FakeSecretStore(
             SessionSecret(session_token="session-2", csrf_token="csrf-2")
         ),
-        managed_browser=FailingManagedBrowser(authenticated=True),
+        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=history_store,
+        codex_auth_sync=FailingSyncService(),
     )
 
-    with pytest.raises(SwitchError, match="prepare_switch failed"):
+    with pytest.raises(SwitchError, match="sync failed"):
         service.switch_to(index=1)
 
     assert history_store.events[-1].message == (
-        "prepare_switch failed with session_token=[redacted] csrf_token=[redacted]"
+        "sync failed with session_token=[redacted] csrf_token=[redacted]"
     )
