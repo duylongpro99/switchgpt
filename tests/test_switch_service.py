@@ -206,6 +206,98 @@ def test_switch_to_raises_strict_codex_sync_failure_with_repair_guidance() -> No
     assert service._history_store.events[-1].result == "failure"
 
 
+def test_switch_to_missing_imported_codex_auth_raises_repair_guidance() -> None:
+    class FakeSyncService:
+        def sync_active_slot(self, **kwargs):
+            del kwargs
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "failed",
+                    "method": None,
+                    "failure_class": "codex-auth-source-missing",
+                    "message": "codex-auth-source-missing: no imported auth.json stored for this slot",
+                },
+            )()
+
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        secret_store=FakeSecretStore(
+            SessionSecret(session_token="", csrf_token=None, codex_auth_json=None)
+        ),
+        managed_browser=object(),
+        history_store=FakeHistoryStore(),
+        codex_auth_sync=FakeSyncService(),
+    )
+
+    with pytest.raises(
+        CodexAuthSyncFailedError,
+        match="switchgpt import-codex-auth --slot 1",
+    ):
+        service.switch_to(index=1)
+
+    assert service._history_store.events[-1].result == "failure"
+
+
+def test_switch_to_does_not_touch_managed_browser_for_codex_only_switch() -> None:
+    class StrictManagedBrowser:
+        def ensure_runtime(self):
+            raise AssertionError("managed browser should not be used")
+
+        def prepare_switch(self, *args, **kwargs):
+            raise AssertionError("managed browser should not be used")
+
+        def is_authenticated(self, *args, **kwargs):
+            raise AssertionError("managed browser should not be used")
+
+    class FakeSyncService:
+        def sync_active_slot(self, **kwargs):
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "ok",
+                    "method": "file",
+                    "failure_class": None,
+                    "message": None,
+                },
+            )()
+
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        secret_store=FakeSecretStore(
+            SessionSecret(
+                session_token="stale-browser-cookie",
+                csrf_token="stale-browser-csrf",
+                codex_auth_json={
+                    "tokens": {
+                        "access_token": "access-2",
+                        "refresh_token": "refresh-2",
+                        "id_token": "id-2",
+                        "account_id": "account-2",
+                    }
+                },
+            )
+        ),
+        managed_browser=StrictManagedBrowser(),
+        history_store=FakeHistoryStore(),
+        codex_auth_sync=FakeSyncService(),
+    )
+
+    result = service.switch_to(index=1)
+
+    assert result.account.index == 1
+    assert service._account_store.saved_runtime_state[0] == 1
+    assert service._history_store.events[-1].result == "success"
+
+
 def test_switch_to_records_watch_auto_mode_for_automation_success() -> None:
     service = SwitchService(
         account_store=FakeAccountStore(
