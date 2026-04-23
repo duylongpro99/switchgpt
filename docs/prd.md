@@ -1,6 +1,6 @@
 # switchgpt — Architecture & PRD
 
-> CLI tool for automatic ChatGPT Plus account rotation when usage limits are hit.
+> CLI tool for automatic ChatGPT Plus account rotation when usage limits are hit, with slot-scoped Codex auth projection from imported `auth.json`.
 
 ---
 
@@ -83,6 +83,8 @@ When one of your 3 ChatGPT Plus accounts hits its Codex usage limit, you are for
 |---|---|
 | `switchgpt add` | One-time login flow for a new account — opens visible Chromium, user logs in manually (incl. OTP), session token captured and stored in OS keychain |
 | `switchgpt add --reauth 1` | Re-run the one-time login for an existing account slot (e.g. when token expires after ~30 days) |
+| `switchgpt import-codex-auth --slot 1` | Import the currently active Codex CLI `auth.json` into slot 1 after manual `codex login` |
+| `switchgpt codex-sync` | Project the active slot's previously imported Codex `auth.json` back to the live Codex auth path |
 | `switchgpt switch` | Manually switch to the next account in rotation (cookie inject only, no login) |
 | `switchgpt switch --to 2` | Switch to a specific account by index |
 | `switchgpt status` | Show all accounts, which is active, token expiry estimate, and limit reset times |
@@ -93,7 +95,7 @@ When one of your 3 ChatGPT Plus accounts hits its Codex usage limit, you are for
 
 ### Authentication & credential persistence
 
-ChatGPT uses a `__Secure-next-auth.session-token` cookie (~30 day TTL) that authenticates the full browser session. Once captured, this token is all that is needed for every future switch — no password, no OTP.
+ChatGPT uses a `__Secure-next-auth.session-token` cookie (~30 day TTL) that authenticates the full browser session. SwitchGPT stores that browser session in the OS keychain for ChatGPT switching, and separately stores imported Codex CLI `auth.json` payloads per slot for Codex projection.
 
 #### First-time login (`switchgpt add`) — runs once per account
 
@@ -120,6 +122,19 @@ OTP handling during `switchgpt add` uses the manual completion approach: Playwri
 [switchgpt] Press ENTER here when you are done: _
 ```
 
+#### Codex auth import — manual, slot-scoped
+
+```
+codex login
+    │
+    ├─ user authenticates in Codex CLI with the target account
+    ├─ Codex writes live ~/.codex/auth.json
+    ├─ switchgpt import-codex-auth --slot N
+    ├─ tool validates and fingerprints live auth.json
+    ├─ raw auth.json stored securely → OS keychain
+    └─ non-secret fingerprint metadata stored → accounts.json
+```
+
 #### Every switch after that — no login, no OTP
 
 ```
@@ -130,6 +145,7 @@ limit hit detected  (or: switchgpt switch)
     ├─ clear current browser cookies
     ├─ inject stored session token
     ├─ reload page
+    ├─ project imported Codex auth.json for active slot
     └─ Codex resumes on new account               ← ~2–3 seconds total
 ```
 
@@ -142,12 +158,12 @@ OS Keychain  (never written to disk as plaintext)
 └── switchgpt_account_2   →  session token for account3@example.com
 
 ~/.switchgpt/accounts.json  (safe to inspect — contains no secrets)
-└── email, keychain_key reference, last_used, limit_hit_at, token_captured_at
+└── email, keychain_key reference, last_used, limit_hit_at, token_captured_at, Codex import/projection fingerprints
 ```
 
 #### Token expiry (~30 days)
 
-When a stored token expires the page redirects to the login screen instead of loading Codex. The limit detector watches for this redirect and surfaces a warning:
+When a stored browser token expires the page redirects to the login screen instead of loading ChatGPT. The limit detector watches for this redirect and surfaces a warning:
 
 ```
 [switchgpt] ⚠  Session expired for account2@example.com
@@ -155,6 +171,16 @@ When a stored token expires the page redirects to the login screen instead of lo
 ```
 
 `--reauth` re-triggers the one-time login flow for that account slot only, refreshes the stored token, and normal rotation resumes.
+
+When Codex auth is missing or drifted, the repair path is:
+
+```bash
+codex login
+uv run switchgpt import-codex-auth --slot <slot>
+uv run switchgpt codex-sync
+```
+
+SwitchGPT no longer performs browser-driven Codex OAuth recovery in normal flows.
 
 ---
 

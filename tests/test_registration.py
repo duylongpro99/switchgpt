@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 
 from switchgpt.models import AccountRecord, AccountState
-from switchgpt.errors import BrowserRegistrationError, CodexAuthSyncFailedError
+from switchgpt.errors import BrowserRegistrationError
 from switchgpt.playwright_client import BrowserRegistrationClient
 from switchgpt.registration import RegistrationResult, RegistrationService
 from switchgpt.secret_store import SessionSecret
@@ -18,7 +18,7 @@ class FakeBrowserClient:
         )
 
 
-def test_add_registration_writes_secret_before_metadata(tmp_path) -> None:
+def test_add_registration_writes_placeholder_secret_before_metadata(tmp_path) -> None:
     store = []
 
     class FakeSecretStore:
@@ -37,29 +37,15 @@ def test_add_registration_writes_secret_before_metadata(tmp_path) -> None:
 
     service = RegistrationService(FakeAccountStore(), FakeSecretStore(), FakeBrowserClient())
     service.add()
-    assert store == [
-        ("secret", "switchgpt_account_0", "token-1"),
-        ("metadata", 0, "account1@example.com"),
-        ("runtime-state", 0, datetime(2026, 4, 16, 8, 30, tzinfo=UTC)),
-    ]
+    assert store[0] == ("secret", "switchgpt_account_0", "")
+    assert store[1] == ("metadata", 0, "slot-0@codex.local")
+    assert store[2][0] == "runtime-state"
+    assert store[2][1] == 0
+    assert isinstance(store[2][2], datetime)
 
 
-def test_add_runs_codex_sync_after_successful_persist() -> None:
+def test_add_does_not_run_codex_sync_after_successful_persist() -> None:
     events = []
-
-    class FakeSyncService:
-        def sync_active_slot(self, **kwargs):
-            events.append(("sync", kwargs["active_slot"], kwargs["occurred_at"]))
-            return type(
-                "Result",
-                (),
-                {
-                    "outcome": "ok",
-                    "method": "file",
-                    "failure_class": None,
-                    "message": None,
-                },
-            )()
 
     class FakeSecretStore:
         def write(self, key, secret) -> None:
@@ -79,7 +65,7 @@ def test_add_runs_codex_sync_after_successful_persist() -> None:
         FakeAccountStore(),
         FakeSecretStore(),
         FakeBrowserClient(),
-        codex_auth_sync=FakeSyncService(),
+        codex_auth_sync=object(),
     )
 
     record = service.add()
@@ -89,62 +75,9 @@ def test_add_runs_codex_sync_after_successful_persist() -> None:
         ("secret", "switchgpt_account_0"),
         ("metadata", 0),
         ("runtime-state", 0),
-        ("sync", 0),
     ]
-    assert events[1][2] == events[2][2] == events[3][2]
-
-
-def test_add_raises_strict_codex_sync_failure_with_repair_guidance_after_persist() -> None:
-    class FakeSecretStore:
-        def write(self, key, secret) -> None:
-            del key, secret
-
-    class FakeAccountStore:
-        def __init__(self) -> None:
-            self.saved = None
-            self.runtime_state = None
-
-        def next_empty_slot(self) -> int:
-            return 0
-
-        def save_record(self, record) -> None:
-            self.saved = record
-
-        def save_runtime_state(self, active_account_index, switched_at) -> None:
-            self.runtime_state = (active_account_index, switched_at)
-
-    class FakeSyncService:
-        def sync_active_slot(self, **kwargs):
-            del kwargs
-            return type(
-                "Result",
-                (),
-                {
-                    "outcome": "failed",
-                    "method": None,
-                    "failure_class": "codex-auth-fallback-failed",
-                    "message": "env projection failed",
-                },
-            )()
-
-    account_store = FakeAccountStore()
-    service = RegistrationService(
-        account_store,
-        FakeSecretStore(),
-        FakeBrowserClient(),
-        codex_auth_sync=FakeSyncService(),
-    )
-
-    with pytest.raises(
-        CodexAuthSyncFailedError, match="Run `switchgpt codex-sync` to repair"
-    ):
-        service.add()
-
-    assert account_store.saved is not None
-    assert account_store.runtime_state == (
-        0,
-        datetime(2026, 4, 16, 8, 30, tzinfo=UTC),
-    )
+    assert events[1][2] == events[2][2]
+    assert record.email == "slot-0@codex.local"
 
 
 def test_add_rolls_back_secret_when_metadata_write_fails(tmp_path) -> None:
@@ -192,6 +125,33 @@ def test_add_keeps_metadata_error_when_cleanup_also_fails(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="disk failure"):
         service.add()
     assert deleted == ["switchgpt_account_0"]
+
+
+def test_add_does_not_call_browser_registration() -> None:
+    class FakeBrowserClient:
+        def register(self):
+            raise AssertionError("browser registration should not run for add")
+
+    class FakeSecretStore:
+        def write(self, key, secret) -> None:
+            assert key == "switchgpt_account_0"
+            assert secret == SessionSecret(session_token="", csrf_token=None)
+
+    class FakeAccountStore:
+        def next_empty_slot(self) -> int:
+            return 0
+
+        def save_record(self, record) -> None:
+            assert record.email == "slot-0@codex.local"
+
+        def save_runtime_state(self, active_account_index, switched_at) -> None:
+            assert active_account_index == 0
+
+    service = RegistrationService(FakeAccountStore(), FakeSecretStore(), FakeBrowserClient())
+
+    record = service.add()
+
+    assert record.index == 0
 
 
 def test_reauth_keeps_old_secret_when_browser_capture_fails() -> None:
@@ -278,7 +238,7 @@ def test_reauth_restores_old_secret_when_metadata_save_fails() -> None:
     )
 
 
-def test_reauth_runs_codex_sync_after_successful_persist() -> None:
+def test_reauth_does_not_run_codex_sync_after_successful_persist() -> None:
     events = []
 
     class FakeBrowserClient:
@@ -318,25 +278,11 @@ def test_reauth_runs_codex_sync_after_successful_persist() -> None:
         def save_runtime_state(self, active_account_index, switched_at) -> None:
             events.append(("runtime-state", active_account_index, switched_at))
 
-    class FakeSyncService:
-        def sync_active_slot(self, **kwargs):
-            events.append(("sync", kwargs["active_slot"], kwargs["occurred_at"]))
-            return type(
-                "Result",
-                (),
-                {
-                    "outcome": "ok",
-                    "method": "file",
-                    "failure_class": None,
-                    "message": None,
-                },
-            )()
-
     service = RegistrationService(
         FakeAccountStore(),
         FakeSecretStore(),
         FakeBrowserClient(),
-        codex_auth_sync=FakeSyncService(),
+        codex_auth_sync=object(),
     )
 
     record = service.reauth(0)
@@ -346,9 +292,8 @@ def test_reauth_runs_codex_sync_after_successful_persist() -> None:
         ("secret", "switchgpt_account_0"),
         ("metadata", 0),
         ("runtime-state", 0),
-        ("sync", 0),
     ]
-    assert events[1][2] == events[2][2] == events[3][2]
+    assert events[1][2] == events[2][2]
 
 
 def test_reauth_in_managed_workspace_refreshes_secret_and_metadata() -> None:
@@ -598,8 +543,8 @@ def test_browser_client_uses_discovered_email_when_available(monkeypatch) -> Non
         def __init__(self) -> None:
             self.browser = FakeBrowser()
 
-        def launch(self, headless: bool):
-            assert headless is False
+        def launch(self, **kwargs):
+            assert kwargs["headless"] is False
             return self.browser
 
     class FakePlaywright:
@@ -669,8 +614,8 @@ def test_browser_client_registers_and_closes_browser_after_email_capture(monkeyp
         def __init__(self) -> None:
             self.browser = FakeBrowser()
 
-        def launch(self, headless: bool):
-            assert headless is False
+        def launch(self, **kwargs):
+            assert kwargs["headless"] is False
             events.append("launch")
             return self.browser
 
@@ -753,8 +698,8 @@ def test_browser_client_register_rejects_auth_error_route_without_verified_sessi
         def __init__(self) -> None:
             self.browser = FakeBrowser()
 
-        def launch(self, headless: bool):
-            assert headless is False
+        def launch(self, **kwargs):
+            assert kwargs["headless"] is False
             return self.browser
 
     class FakePlaywright:
@@ -779,7 +724,7 @@ def test_browser_client_capture_existing_session_uses_session_api_email_when_bod
 
     class FakeBody:
         def inner_text(self) -> str:
-            return "Welcome back"
+            return "ChatGPT open sidebar"
 
     class FakePage:
         url = "https://chatgpt.com/"
@@ -805,6 +750,133 @@ def test_browser_client_capture_existing_session_uses_session_api_email_when_bod
     result = client.capture_existing_session(page, existing_email="unknown@example.com")
 
     assert result.email == "account1@example.com"
+
+
+def test_browser_client_capture_existing_session_does_not_cache_codex_auth_json(
+    tmp_path,
+) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        """{
+  "auth_mode": "chatgpt",
+  "OPENAI_API_KEY": null,
+  "tokens": {
+    "access_token": "access-1",
+    "refresh_token": "refresh-1",
+    "id_token": "%s",
+    "account_id": "account-1"
+  },
+  "last_refresh": "2026-04-19T06:22:47.149685Z"
+}
+"""
+        % _build_id_token(email="account1@example.com", chatgpt_account_id="account-1"),
+        encoding="utf-8",
+    )
+    client = BrowserRegistrationClient(
+        base_url="https://chatgpt.com",
+        codex_auth_file_path=auth_path,
+    )
+
+    class FakeBody:
+        def inner_text(self) -> str:
+            return "ChatGPT open sidebar"
+
+    class FakePage:
+        url = "https://chatgpt.com/"
+
+        def locator(self, selector: str):
+            assert selector == "body"
+            return FakeBody()
+
+        def evaluate(self, script: str):
+            assert "/api/auth/session" in script
+            return {"user": {"email": "account1@example.com"}}
+
+    class FakeContext:
+        def cookies(self):
+            return [
+                {"name": "__Secure-next-auth.session-token", "value": "token-1"},
+                {"name": "__Host-next-auth.csrf-token", "value": "csrf-1"},
+            ]
+
+    page = FakePage()
+    page.context = FakeContext()
+
+    result = client.capture_existing_session(page, existing_email="unknown@example.com")
+
+    assert result.secret.codex_auth_json is None
+
+
+def test_browser_client_capture_existing_session_uses_codex_auth_email_when_session_email_missing(
+    tmp_path,
+) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        """{
+  "auth_mode": "chatgpt",
+  "OPENAI_API_KEY": null,
+  "tokens": {
+    "access_token": "access-1",
+    "refresh_token": "refresh-1",
+    "id_token": "%s",
+    "account_id": "account-1"
+  },
+  "last_refresh": "2026-04-19T06:22:47.149685Z"
+}
+"""
+        % _build_id_token(email="account1@example.com", chatgpt_account_id="account-1"),
+        encoding="utf-8",
+    )
+    client = BrowserRegistrationClient(
+        base_url="https://chatgpt.com",
+        codex_auth_file_path=auth_path,
+    )
+
+    class FakeBody:
+        def inner_text(self) -> str:
+            return "ChatGPT open sidebar"
+
+    class FakePage:
+        url = "https://chatgpt.com/"
+
+        def locator(self, selector: str):
+            assert selector == "body"
+            return FakeBody()
+
+        def evaluate(self, script: str):
+            assert "/api/auth/session" in script
+            return None
+
+    class FakeContext:
+        def cookies(self):
+            return [
+                {"name": "__Secure-next-auth.session-token", "value": "token-1"},
+                {"name": "__Host-next-auth.csrf-token", "value": "csrf-1"},
+            ]
+
+    page = FakePage()
+    page.context = FakeContext()
+
+    result = client.capture_existing_session(page, existing_email="unknown@example.com")
+
+    assert result.email == "account1@example.com"
+    assert result.secret.codex_auth_json is None
+
+
+def _build_id_token(*, email: str, chatgpt_account_id: str) -> str:
+    import base64
+    import json
+
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
+    payload = {
+        "iss": "https://auth.openai.com/",
+        "email": email,
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": chatgpt_account_id,
+        },
+    }
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return f"{header}.{body}.signature"
 
 
 def test_browser_client_register_retries_capture_when_auth_error_route_persists(monkeypatch) -> None:
@@ -876,8 +948,8 @@ def test_browser_client_register_retries_capture_when_auth_error_route_persists(
         def __init__(self) -> None:
             self.browser = FakeBrowser()
 
-        def launch(self, headless: bool):
-            assert headless is False
+        def launch(self, **kwargs):
+            assert kwargs["headless"] is False
             return self.browser
 
     class FakePlaywright:
@@ -967,8 +1039,8 @@ def test_browser_client_register_prompts_again_when_auth_error_persists_after_re
         def __init__(self) -> None:
             self.browser = FakeBrowser()
 
-        def launch(self, headless: bool):
-            assert headless is False
+        def launch(self, **kwargs):
+            assert kwargs["headless"] is False
             return self.browser
 
     class FakePlaywright:
@@ -1048,8 +1120,8 @@ def test_browser_client_register_prompts_again_when_first_round_has_no_session_c
         def __init__(self) -> None:
             self.browser = FakeBrowser()
 
-        def launch(self, headless: bool):
-            assert headless is False
+        def launch(self, **kwargs):
+            assert kwargs["headless"] is False
             return self.browser
 
     class FakePlaywright:
@@ -1152,8 +1224,8 @@ def test_browser_client_register_recreates_context_after_auth_error_round(monkey
         def __init__(self) -> None:
             self.browser = FakeBrowser()
 
-        def launch(self, headless: bool):
-            assert headless is False
+        def launch(self, **kwargs):
+            assert kwargs["headless"] is False
             return self.browser
 
     class FakePlaywright:
@@ -1237,7 +1309,12 @@ def test_browser_client_register_uses_configured_browser_channel(monkeypatch) ->
     result = client.register()
 
     assert result.secret.session_token == "token-1"
-    assert launch_kwargs == {"headless": False, "channel": "chrome"}
+    assert launch_kwargs == {
+        "headless": False,
+        "channel": "chrome",
+        "ignore_default_args": ["--enable-automation"],
+        "args": ["--disable-blink-features=AutomationControlled"],
+    }
 
 
 def test_browser_client_register_falls_back_to_default_launch_when_channel_unavailable(
@@ -1305,8 +1382,17 @@ def test_browser_client_register_falls_back_to_default_launch_when_channel_unava
 
     assert result.secret.session_token == "token-1"
     assert launch_attempts == [
-        {"headless": False, "channel": "chrome"},
-        {"headless": False},
+        {
+            "headless": False,
+            "channel": "chrome",
+            "ignore_default_args": ["--enable-automation"],
+            "args": ["--disable-blink-features=AutomationControlled"],
+        },
+        {
+            "headless": False,
+            "ignore_default_args": ["--enable-automation"],
+            "args": ["--disable-blink-features=AutomationControlled"],
+        },
     ]
 
 
@@ -1386,6 +1472,8 @@ def test_browser_client_register_uses_persistent_context_when_profile_dir_is_con
         "user_data_dir": str(profile_dir),
         "headless": False,
         "channel": "chrome",
+        "ignore_default_args": ["--enable-automation"],
+        "args": ["--disable-blink-features=AutomationControlled"],
     }
     assert events == [
         "launch_persistent_context",
@@ -1467,6 +1555,82 @@ def test_browser_client_register_applies_stealth_launch_flags_when_enabled(monke
     assert launch_kwargs["args"] == ["--disable-blink-features=AutomationControlled"]
 
 
+def test_browser_client_register_applies_stealth_launch_flags_by_default(monkeypatch) -> None:
+    client = BrowserRegistrationClient(base_url="https://chatgpt.com")
+    launch_kwargs: dict[str, object] = {}
+
+    class FakeBody:
+        def inner_text(self) -> str:
+            return "ChatGPT signed in as account1@example.com"
+
+    class FakePage:
+        url = "https://chatgpt.com/"
+
+        def goto(self, url: str) -> None:
+            self.url = url
+
+        def locator(self, selector: str):
+            assert selector == "body"
+            return FakeBody()
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self._page = FakePage()
+
+        def new_page(self):
+            return self._page
+
+        def cookies(self):
+            return [
+                {"name": "__Secure-next-auth.session-token", "value": "token-1"},
+            ]
+
+        def add_init_script(self, script: str) -> None:
+            return None
+
+    class FakeBrowser:
+        def __init__(self) -> None:
+            self.context = FakeContext()
+
+        def new_context(self):
+            return self.context
+
+        def close(self) -> None:
+            return None
+
+    class FakeChromium:
+        def launch(self, **kwargs):
+            launch_kwargs.update(kwargs)
+            return FakeBrowser()
+
+    class FakePlaywright:
+        def __init__(self) -> None:
+            self.chromium = FakeChromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.delenv("SWITCHGPT_BROWSER_STEALTH", raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt="": None)
+    monkeypatch.setattr("switchgpt.playwright_client.sync_playwright", lambda: FakePlaywright())
+
+    result = client.register()
+
+    assert result.secret.session_token == "token-1"
+    assert launch_kwargs["ignore_default_args"] == ["--enable-automation"]
+    assert launch_kwargs["args"] == ["--disable-blink-features=AutomationControlled"]
+
+
+def test_browser_client_stealth_can_be_disabled_with_env(monkeypatch) -> None:
+    monkeypatch.setenv("SWITCHGPT_BROWSER_STEALTH", "0")
+    client = BrowserRegistrationClient(base_url="https://chatgpt.com")
+
+    assert client._is_stealth_enabled() is False
+
+
 def test_browser_client_candidate_channels_reads_from_dotenv(
     monkeypatch,
     tmp_path,
@@ -1516,8 +1680,8 @@ def test_browser_client_closes_browser_when_registration_fails(monkeypatch) -> N
             events.append("close")
 
     class FakeChromium:
-        def launch(self, headless: bool):
-            assert headless is False
+        def launch(self, **kwargs):
+            assert kwargs["headless"] is False
             events.append("launch")
             return FakeBrowser()
 
@@ -1556,8 +1720,8 @@ def test_browser_client_closes_browser_when_opening_context_fails(monkeypatch) -
             events.append("close")
 
     class FakeChromium:
-        def launch(self, headless: bool):
-            assert headless is False
+        def launch(self, **kwargs):
+            assert kwargs["headless"] is False
             events.append("launch")
             return FakeBrowser()
 

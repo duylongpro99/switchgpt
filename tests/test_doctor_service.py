@@ -25,6 +25,8 @@ class Snapshot:
         last_codex_sync_method=None,
         last_codex_sync_at=None,
         last_codex_sync_error=None,
+        last_codex_sync_fingerprint=None,
+        codex_import_fingerprints=None,
     ) -> None:
         self.accounts = accounts
         self.active_account_index = active_account_index
@@ -34,6 +36,8 @@ class Snapshot:
         self.last_codex_sync_method = last_codex_sync_method
         self.last_codex_sync_at = last_codex_sync_at
         self.last_codex_sync_error = last_codex_sync_error
+        self.last_codex_sync_fingerprint = last_codex_sync_fingerprint
+        self.codex_import_fingerprints = codex_import_fingerprints or {}
 
 
 class Account:
@@ -274,6 +278,8 @@ def test_run_warns_when_last_codex_sync_does_not_match_active_slot() -> None:
                     last_codex_sync_status="ok",
                     last_codex_sync_method="file",
                     last_codex_sync_at=datetime(2026, 4, 19, 9, 30, tzinfo=UTC),
+                    last_codex_sync_fingerprint="fp-live-1",
+                    codex_import_fingerprints={0: "fp-imported-0"},
                 )
             },
         )(),
@@ -308,6 +314,7 @@ def test_run_warns_when_last_codex_sync_failed_for_active_slot() -> None:
                     last_codex_sync_method="env-fallback",
                     last_codex_sync_at=datetime(2026, 4, 19, 9, 45, tzinfo=UTC),
                     last_codex_sync_error="codex-auth-write-failed",
+                    codex_import_fingerprints={0: "fp-imported-0"},
                 )
             },
         )(),
@@ -341,6 +348,7 @@ def test_run_warns_when_last_codex_sync_failed_for_different_slot_than_active() 
                     last_codex_sync_method="env-fallback",
                     last_codex_sync_at=datetime(2026, 4, 19, 9, 45, tzinfo=UTC),
                     last_codex_sync_error="codex-auth-write-failed",
+                    codex_import_fingerprints={0: "fp-imported-0"},
                 )
             },
         )(),

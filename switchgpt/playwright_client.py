@@ -1,8 +1,10 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import json
 import sys
 import re
 from pathlib import Path
+import base64
 
 from playwright.sync_api import sync_playwright
 
@@ -23,12 +25,15 @@ AUTH_ERROR_RETRY_PROMPT = (
 )
 DEFAULT_BROWSER_CHANNEL = "chrome"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+_UNKNOWN_EMAIL = "unknown@example.com"
 
 
 @dataclass(frozen=True)
 class BrowserRegistrationClient:
     base_url: str
     profile_dir: Path | None = None
+    codex_auth_file_path: Path | None = None
 
     def _candidate_channels(self) -> list[str | None]:
         configured = (get_env("SWITCHGPT_BROWSER_CHANNEL", "") or "").strip()
@@ -42,7 +47,12 @@ class BrowserRegistrationClient:
 
     def _is_stealth_enabled(self) -> bool:
         value = get_env("SWITCHGPT_BROWSER_STEALTH", "") or ""
-        return value.strip().lower() in _TRUE_VALUES
+        normalized = value.strip().lower()
+        if not normalized:
+            return True
+        if normalized in _FALSE_VALUES:
+            return False
+        return normalized in _TRUE_VALUES
 
     def _stealth_launch_kwargs(self) -> dict[str, object]:
         if not self._is_stealth_enabled():
@@ -252,6 +262,66 @@ class BrowserRegistrationClient:
     def _normalize_email(self, email: str) -> str:
         return email.strip().lower()
 
+    def _is_unknown_email(self, email: str | None) -> bool:
+        if type(email) is not str:
+            return True
+        return self._normalize_email(email) == _UNKNOWN_EMAIL
+
+    def _load_codex_auth_identity(self) -> tuple[str, dict[str, object]] | None:
+        auth_file_path = self.codex_auth_file_path
+        if auth_file_path is None or not auth_file_path.exists():
+            return None
+        try:
+            payload = json.loads(auth_file_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        tokens = payload.get("tokens")
+        if not isinstance(tokens, dict):
+            return None
+        access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token")
+        id_token = tokens.get("id_token")
+        account_id = tokens.get("account_id")
+        if not all(
+            type(value) is str and value
+            for value in (access_token, refresh_token, id_token, account_id)
+        ):
+            return None
+        token_email = self._email_from_id_token(id_token)
+        if token_email is None:
+            return None
+        return (
+            token_email,
+            payload,
+        )
+
+    def _resolve_registration_email(self, *, page, existing_email: str) -> str:
+        discovered_email = self._discover_email(page)
+        if discovered_email is not None:
+            return discovered_email
+        if not self._is_unknown_email(existing_email):
+            return self._normalize_email(existing_email)
+        resolved = self._load_codex_auth_identity()
+        if resolved is not None:
+            return resolved[0]
+        return self._normalize_email(existing_email)
+
+    def _email_from_id_token(self, id_token: str) -> str | None:
+        if "." not in id_token:
+            return None
+        try:
+            payload_segment = id_token.split(".")[1]
+            payload_segment += "=" * (-len(payload_segment) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(payload_segment))
+        except (ValueError, json.JSONDecodeError):
+            return None
+        email = payload.get("email")
+        if type(email) is not str or not email.strip():
+            return None
+        return self._normalize_email(email)
+
     def _page_body_text(self, page) -> str:
         locator = page.locator("body")
         return locator.inner_text()
@@ -351,12 +421,16 @@ class BrowserRegistrationClient:
                         csrf_cookie = self._optional_cookie_value(
                             cookies, "__Host-next-auth.csrf-token"
                         )
-                        email = self._discover_email(page) or "unknown@example.com"
+                        email = self._resolve_registration_email(
+                            page=page,
+                            existing_email=_UNKNOWN_EMAIL,
+                        )
                         return RegistrationResult(
                             email=email,
                             secret=SessionSecret(
                                 session_token=session_token,
                                 csrf_token=csrf_cookie,
+                                codex_auth_json=None,
                             ),
                             captured_at=datetime.now(UTC),
                         )
@@ -394,12 +468,13 @@ class BrowserRegistrationClient:
         csrf_cookie = self._optional_cookie_value(
             cookies, "__Host-next-auth.csrf-token"
         )
-        email = self._discover_email(page) or self._normalize_email(existing_email)
+        email = self._resolve_registration_email(page=page, existing_email=existing_email)
         return RegistrationResult(
             email=email,
             secret=SessionSecret(
                 session_token=session_token,
                 csrf_token=csrf_cookie,
+                codex_auth_json=None,
             ),
             captured_at=datetime.now(UTC),
         )

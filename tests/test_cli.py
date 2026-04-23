@@ -70,6 +70,7 @@ def test_build_registration_service_passes_managed_profile_dir_to_browser_client
                 {
                     "chatgpt_base_url": "https://chatgpt.com",
                     "managed_profile_dir": "profile-dir",
+                    "codex_auth_file_path": "auth.json",
                 },
             )(),
             "account_store": object(),
@@ -78,9 +79,10 @@ def test_build_registration_service_passes_managed_profile_dir_to_browser_client
     )()
 
     class FakeBrowserRegistrationClient:
-        def __init__(self, *, base_url, profile_dir):
+        def __init__(self, *, base_url, profile_dir, codex_auth_file_path):
             captured["base_url"] = base_url
             captured["profile_dir"] = profile_dir
+            captured["codex_auth_file_path"] = codex_auth_file_path
 
     class FakeRegistrationService:
         def __init__(
@@ -115,6 +117,7 @@ def test_build_registration_service_passes_managed_profile_dir_to_browser_client
 
     assert captured["base_url"] == "https://chatgpt.com"
     assert captured["profile_dir"] == "profile-dir"
+    assert captured["codex_auth_file_path"] == "auth.json"
     assert captured["service_args"][0] is runtime.account_store
     assert captured["service_args"][1] is runtime.secret_store
     assert captured["codex_auth_sync"] is sentinel_sync
@@ -142,6 +145,67 @@ def test_build_codex_sync_command_service_uses_bootstrap_wiring(monkeypatch) -> 
     from switchgpt.cli import build_codex_sync_command_service
 
     assert build_codex_sync_command_service() is sentinel_service
+
+
+def test_build_codex_import_service_uses_bootstrap_wiring(monkeypatch) -> None:
+    sentinel_service = object()
+    monkeypatch.setattr(
+        "switchgpt.cli.bootstrap.build_codex_import_service",
+        lambda: sentinel_service,
+    )
+
+    from switchgpt.cli import build_codex_import_service
+
+    assert build_codex_import_service() is sentinel_service
+
+
+def test_build_remove_command_service_uses_bootstrap_wiring(monkeypatch) -> None:
+    sentinel_service = object()
+    monkeypatch.setattr(
+        "switchgpt.cli.bootstrap.build_remove_command_service",
+        lambda: sentinel_service,
+    )
+
+    from switchgpt.cli import build_remove_command_service
+
+    assert build_remove_command_service() is sentinel_service
+
+
+def test_build_codex_auth_sync_service_passes_auth_path_to_file_target(monkeypatch) -> None:
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "settings": type(
+                "Settings",
+                (),
+                {
+                    "codex_auth_file_path": "auth.json",
+                },
+            )(),
+            "account_store": object(),
+        },
+    )()
+    captured: dict[str, object] = {}
+
+    class FakeFileTarget:
+        def __init__(self, *, auth_file_path=None):
+            captured["auth_file_path"] = auth_file_path
+
+    class FakeSyncService:
+        def __init__(self, *, file_target, account_store=None):
+            captured["file_target"] = file_target
+            captured["account_store"] = account_store
+
+    monkeypatch.setattr("switchgpt.bootstrap.CodexFileAuthTarget", FakeFileTarget)
+    monkeypatch.setattr("switchgpt.bootstrap.CodexAuthSyncService", FakeSyncService)
+
+    from switchgpt.bootstrap import build_codex_auth_sync_service
+
+    build_codex_auth_sync_service(runtime=runtime)
+
+    assert captured["auth_file_path"] == "auth.json"
+    assert captured["account_store"] is runtime.account_store
 
 
 def test_codex_sync_command_service_syncs_active_slot_from_runtime_state() -> None:
@@ -200,22 +264,100 @@ def test_codex_sync_command_service_syncs_active_slot_from_runtime_state() -> No
     assert isinstance(sync_call["occurred_at"], datetime)
 
 
-def test_codex_sync_command_service_requires_active_slot() -> None:
+def test_codex_import_command_service_stores_live_auth_json_for_slot() -> None:
+    replaced: dict[str, object] = {}
+
     class FakeAccountStore:
-        class Snapshot:
-            active_account_index = None
+        def get_record(self, index: int):
+            assert index == 1
+            return type(
+                "Account",
+                (),
+                {
+                    "index": 1,
+                    "email": "account2@example.com",
+                    "keychain_key": "switchgpt_account_1",
+                },
+            )()
 
-        def load(self):
-            return self.Snapshot()
+    class FakeSecretStore:
+        def read(self, key: str):
+            assert key == "switchgpt_account_1"
+            return type(
+                "Secret",
+                (),
+                {
+                    "session_token": "session-2",
+                    "csrf_token": "csrf-2",
+                    "codex_auth_json": None,
+                },
+            )()
 
-    from switchgpt.bootstrap import CodexSyncCommandService
+        def replace(self, key: str, secret) -> None:
+            replaced["key"] = key
+            replaced["secret"] = secret
 
-    with pytest.raises(SwitchError, match="No active slot available for Codex sync."):
-        CodexSyncCommandService(
+    class FakeImportService:
+        def read_live_auth_json(self):
+            return {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "access-2",
+                    "refresh_token": "refresh-2",
+                    "id_token": "id-2",
+                    "account_id": "account-2",
+                },
+            }
+
+        def import_auth_json(self, *, slot: int, occurred_at):
+            assert slot == 1
+            assert isinstance(occurred_at, datetime)
+            return type(
+                "Result",
+                (),
+                {"outcome": "imported", "method": "file", "fingerprint": "fp-123"},
+            )()
+
+    from switchgpt.bootstrap import CodexImportCommandService
+
+    result = CodexImportCommandService(
+        FakeAccountStore(),
+        FakeSecretStore(),
+        FakeImportService(),
+    ).run(slot=1)
+
+    assert result.fingerprint == "fp-123"
+    assert replaced["key"] == "switchgpt_account_1"
+    assert replaced["secret"].session_token == "session-2"
+    assert replaced["secret"].csrf_token == "csrf-2"
+    assert replaced["secret"].codex_auth_json["tokens"]["account_id"] == "account-2"
+
+
+def test_codex_import_command_service_requires_secret_for_slot() -> None:
+    class FakeAccountStore:
+        def get_record(self, index: int):
+            return type(
+                "Account",
+                (),
+                {
+                    "index": index,
+                    "keychain_key": f"switchgpt_account_{index}",
+                },
+            )()
+
+    class FakeSecretStore:
+        def read(self, key: str):
+            assert key == "switchgpt_account_2"
+            return None
+
+    from switchgpt.bootstrap import CodexImportCommandService
+
+    with pytest.raises(SwitchError, match="Stored session secret is missing for slot 2."):
+        CodexImportCommandService(
             FakeAccountStore(),
+            FakeSecretStore(),
             object(),
-            object(),
-        ).run()
+        ).run(slot=2)
 
 
 def test_status_command_is_registered(monkeypatch, tmp_path) -> None:
@@ -560,18 +702,38 @@ def test_status_command_shows_account_store_error(monkeypatch, tmp_path) -> None
 
 
 def test_add_command_reports_registered_slot(monkeypatch) -> None:
+    events: list[object] = []
+
     class FakeRegistrationService:
         def add(self):
+            events.append("add")
+
             class Result:
                 index = 0
-                email = "account1@example.com"
+                email = "slot-0@codex.local"
 
             return Result()
 
+    class FakeImportService:
+        def run(self, *, slot: int):
+            events.append(("import", slot))
+            assert slot == 0
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "imported",
+                    "fingerprint": "fp-123",
+                },
+            )()
+
     monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
+    monkeypatch.setattr("switchgpt.cli.build_codex_import_service", lambda: FakeImportService())
     result = runner.invoke(app, ["add"])
     assert result.exit_code == 0
-    assert "Registered account1@example.com in slot 0." in result.stdout
+    assert "Registered slot-0@codex.local in slot 0." in result.stdout
+    assert "Imported Codex auth for slot 0." in result.stdout
+    assert events == ["add", ("import", 0)]
 
 
 def test_add_command_exits_non_zero_on_strict_codex_sync_failure_with_repair_hint(
@@ -597,14 +759,25 @@ def test_add_command_exits_non_zero_on_strict_codex_sync_failure_with_repair_hin
     assert "Traceback" not in result.stderr
 
 
-def test_add_command_from_open_captures_managed_workspace_session(monkeypatch) -> None:
-    page = object()
-    events: list[str] = []
+def test_add_command_rejects_from_open(monkeypatch) -> None:
+    class FakeRegistrationService:
+        def add(self):
+            raise AssertionError("add should not run when --from-open is rejected")
+
+    monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
+
+    result = runner.invoke(app, ["add", "--from-open"])
+
+    assert result.exit_code == 1
+    assert "--from-open is no longer supported" in result.stderr
+
+
+def test_add_command_imports_codex_auth_for_new_slot(monkeypatch) -> None:
+    events: list[object] = []
 
     class FakeRegistrationService:
-        def add_in_managed_workspace(self, *, page):
-            events.append("capture")
-            assert page is not None
+        def add(self):
+            events.append("add")
 
             class Result:
                 index = 1
@@ -612,20 +785,105 @@ def test_add_command_from_open_captures_managed_workspace_session(monkeypatch) -
 
             return Result()
 
-    class FakeManagedBrowser:
-        def open_workspace(self):
-            events.append("open-workspace")
-            return object(), page
+    class FakeImportService:
+        def run(self, *, slot: int):
+            events.append(("import", slot))
+            assert slot == 1
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "imported",
+                    "fingerprint": "fp-123",
+                },
+            )()
 
-    monkeypatch.setattr("builtins.input", lambda prompt="": events.append("input"))
     monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
-    monkeypatch.setattr("switchgpt.cli.build_managed_browser", lambda: FakeManagedBrowser())
+    monkeypatch.setattr("switchgpt.cli.build_codex_import_service", lambda: FakeImportService())
 
-    result = runner.invoke(app, ["add", "--from-open"])
+    result = runner.invoke(app, ["add", "--import-codex-auth"])
 
     assert result.exit_code == 0
     assert "Registered account2@example.com in slot 1." in result.stdout
-    assert events == ["open-workspace", "input", "capture"]
+    assert "Imported Codex auth for slot 1." in result.stdout
+    assert "Codex auth fingerprint stored." in result.stdout
+    assert events == ["add", ("import", 1)]
+
+
+def test_add_command_from_open_with_import_flag_still_rejects_from_open(monkeypatch) -> None:
+    class FakeRegistrationService:
+        def add(self):
+            raise AssertionError("add should not run when --from-open is rejected")
+
+    monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
+
+    result = runner.invoke(app, ["add", "--from-open", "--import-codex-auth"])
+
+    assert result.exit_code == 1
+    assert "--from-open is no longer supported" in result.stderr
+
+
+def test_add_command_reports_codex_import_failure_after_registration(monkeypatch) -> None:
+    class FakeRegistrationService:
+        def add(self):
+            class Result:
+                index = 1
+                email = "account2@example.com"
+
+            return Result()
+
+    class FakeImportService:
+        def run(self, *, slot: int):
+            assert slot == 1
+            raise SwitchError(
+                "Codex auth import failed. Run `codex login` with the target account, then retry `switchgpt import-codex-auth --slot 1`."
+            )
+
+    monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
+    monkeypatch.setattr("switchgpt.cli.build_codex_import_service", lambda: FakeImportService())
+
+    result = runner.invoke(app, ["add", "--import-codex-auth"])
+
+    assert result.exit_code == 1
+    assert "Registered account2@example.com in slot 1." in result.stdout
+    assert "import-codex-auth --slot 1" in result.stderr
+
+
+def test_reauth_command_imports_codex_auth_for_existing_slot(monkeypatch) -> None:
+    events: list[object] = []
+
+    class FakeRegistrationService:
+        def reauth(self, index: int):
+            events.append(("reauth", index))
+
+            class Result:
+                index = 0
+                email = "account1@example.com"
+
+            return Result()
+
+    class FakeImportService:
+        def run(self, *, slot: int):
+            events.append(("import", slot))
+            assert slot == 0
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "imported",
+                    "fingerprint": "fp-reauth",
+                },
+            )()
+
+    monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
+    monkeypatch.setattr("switchgpt.cli.build_codex_import_service", lambda: FakeImportService())
+
+    result = runner.invoke(app, ["add", "--reauth", "0", "--import-codex-auth"])
+
+    assert result.exit_code == 0
+    assert "Reauthenticated account1@example.com in slot 0." in result.stdout
+    assert "Imported Codex auth for slot 0." in result.stdout
+    assert events == [("reauth", 0), ("import", 0)]
 
 
 def test_add_command_rejects_from_open_with_reauth(monkeypatch) -> None:
@@ -638,7 +896,7 @@ def test_add_command_rejects_from_open_with_reauth(monkeypatch) -> None:
     result = runner.invoke(app, ["add", "--from-open", "--reauth", "0"])
 
     assert result.exit_code == 1
-    assert "cannot be combined with --reauth" in result.stderr
+    assert "--from-open is no longer supported" in result.stderr
 
 
 def test_reauth_command_requires_slot_index(monkeypatch) -> None:
@@ -732,6 +990,75 @@ def test_add_command_reports_slot_exhaustion_cleanly(monkeypatch, tmp_path) -> N
     assert "Traceback" not in result.stderr
 
 
+def test_remove_command_requires_target_option(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
+    result = runner.invoke(app, ["remove"])
+
+    assert result.exit_code == 1
+    assert "Specify either --slot or --all." in result.stderr
+
+
+def test_remove_command_rejects_conflicting_targets(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
+    result = runner.invoke(app, ["remove", "--slot", "0", "--all"])
+
+    assert result.exit_code == 1
+    assert "cannot be combined" in result.stderr
+
+
+def test_remove_command_aborts_when_confirmation_declined(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+
+    class FakeService:
+        def remove_slot(self, index: int):
+            raise AssertionError("should not be called")
+
+    monkeypatch.setattr("switchgpt.cli.build_remove_command_service", lambda: FakeService())
+
+    result = runner.invoke(app, ["remove", "--slot", "0"], input="n\n")
+
+    assert result.exit_code == 1
+    assert "Aborted." in result.stderr
+
+
+def test_remove_command_removes_slot_after_confirmation(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+    captured: dict[str, object] = {}
+
+    class FakeService:
+        def remove_slot(self, index: int):
+            captured["slot"] = index
+            return type("Result", (), {"removed_count": 1})()
+
+    monkeypatch.setattr("switchgpt.cli.build_remove_command_service", lambda: FakeService())
+
+    result = runner.invoke(app, ["remove", "--slot", "1"], input="y\n")
+
+    assert result.exit_code == 0
+    assert captured["slot"] == 1
+    assert "Removed slot 1." in result.stdout
+
+
+def test_remove_command_removes_all_with_yes_without_prompt(monkeypatch) -> None:
+    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
+    captured: dict[str, object] = {}
+
+    class FakeService:
+        def remove_all(self):
+            captured["called"] = True
+            return type("Result", (), {"removed_count": 2})()
+
+    monkeypatch.setattr("switchgpt.cli.build_remove_command_service", lambda: FakeService())
+
+    result = runner.invoke(app, ["remove", "--all", "--yes"])
+
+    assert result.exit_code == 0
+    assert captured["called"] is True
+    assert "Removed 2 registered accounts." in result.stdout
+
+
 def test_switch_command_reports_selected_account(monkeypatch) -> None:
     class FakeService:
         def switch_to(self, index: int):
@@ -774,56 +1101,48 @@ def test_switch_command_reports_selected_account_for_default_path(monkeypatch) -
     assert "Switched to account2@example.com in slot 1." in result.stdout
 
 
-def test_codex_sync_command_repairs_active_slot_and_prints_method(monkeypatch) -> None:
+def test_import_codex_auth_command_stores_live_auth_json_for_slot(monkeypatch) -> None:
     class FakeService:
-        def run(self):
+        def run(self, *, slot: int):
+            assert slot == 2
             return type(
                 "Result",
                 (),
                 {
-                    "outcome": "fallback-ok",
-                    "method": "env-fallback",
+                    "outcome": "imported",
+                    "fingerprint": "fp-123",
                 },
             )()
 
     monkeypatch.setattr(
-        "switchgpt.cli.build_codex_sync_command_service",
+        "switchgpt.cli.build_codex_import_service",
         lambda: FakeService(),
     )
 
-    result = runner.invoke(app, ["codex-sync"])
+    result = runner.invoke(app, ["import-codex-auth", "--slot", "2"])
 
     assert result.exit_code == 0
-    assert "Codex auth sync: fallback-ok (env-fallback)." in result.stdout
+    assert "Imported Codex auth for slot 2." in result.stdout
+    assert "Codex auth fingerprint stored." in result.stdout
 
 
-def test_codex_sync_command_exits_non_zero_when_sync_result_failed(monkeypatch) -> None:
+def test_import_codex_auth_reports_manual_repair_message_on_failure(monkeypatch) -> None:
     class FakeService:
-        def run(self):
-            return type(
-                "Result",
-                (),
-                {
-                    "outcome": "failed",
-                    "method": None,
-                    "failure_class": "codex-auth-write-failed",
-                    "message": "Session token [REDACTED] rejected; run switchgpt codex-sync after reauth.",
-                },
-            )()
+        def run(self, *, slot: int):
+            assert slot == 2
+            raise SwitchError(
+                "Codex auth import failed. Run `codex login` with the target account, then retry `switchgpt import-codex-auth --slot 2`."
+            )
 
     monkeypatch.setattr(
-        "switchgpt.cli.build_codex_sync_command_service",
+        "switchgpt.cli.build_codex_import_service",
         lambda: FakeService(),
     )
 
-    result = runner.invoke(app, ["codex-sync"])
+    result = runner.invoke(app, ["import-codex-auth", "--slot", "2"])
 
     assert result.exit_code == 1
-    assert "Codex auth sync: failed." in result.stdout
-    assert (
-        "Session token [REDACTED] rejected; run switchgpt codex-sync after reauth."
-        in result.stderr
-    )
+    assert "codex login" in result.stderr
 
 
 def test_codex_sync_command_reports_domain_errors_cleanly(monkeypatch) -> None:

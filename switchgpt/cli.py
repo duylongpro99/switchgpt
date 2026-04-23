@@ -42,6 +42,14 @@ def build_codex_sync_command_service():
     return bootstrap.build_codex_sync_command_service()
 
 
+def build_codex_import_service():
+    return bootstrap.build_codex_import_service()
+
+
+def build_remove_command_service():
+    return bootstrap.build_remove_command_service()
+
+
 def build_watch_service():
     return bootstrap.build_watch_service()
 
@@ -52,7 +60,18 @@ def _persisted_codex_sync_state_from_snapshot(snapshot):
     method = getattr(snapshot, "last_codex_sync_method", None)
     synced_at = getattr(snapshot, "last_codex_sync_at", None)
     error = getattr(snapshot, "last_codex_sync_error", None)
-    if all(value is None for value in (synced_slot, status, method, synced_at, error)):
+    fingerprint = getattr(snapshot, "last_codex_sync_fingerprint", None)
+    import_fingerprints = getattr(snapshot, "codex_import_fingerprints", {}) or {}
+    active_account_index = getattr(snapshot, "active_account_index", None)
+    imported_fingerprint = (
+        None
+        if active_account_index is None
+        else import_fingerprints.get(active_account_index)
+    )
+    if all(
+        value is None
+        for value in (synced_slot, status, method, synced_at, error, fingerprint)
+    ) and imported_fingerprint is None:
         return None
     return PersistedCodexSyncState(
         synced_slot=synced_slot,
@@ -60,16 +79,26 @@ def _persisted_codex_sync_state_from_snapshot(snapshot):
         method=method,
         synced_at=synced_at,
         error=error,
+        fingerprint=fingerprint,
+        imported=imported_fingerprint is not None,
+        imported_fingerprint=imported_fingerprint,
     )
 
 
 def _render_codex_sync_repair_message(message: str | None) -> str:
     detail = (message or "Codex auth sync failed.").strip()
-    if "switchgpt codex-sync" in detail:
+    if "switchgpt codex-sync" in detail or "switchgpt import-codex-auth" in detail:
         return detail
     if detail.endswith("."):
         return f"{detail} Run `switchgpt codex-sync` to repair."
     return f"{detail}. Run `switchgpt codex-sync` to repair."
+
+
+def _import_codex_auth_for_slot(slot: int) -> None:
+    result = build_codex_import_service().run(slot=slot)
+    print(f"Imported Codex auth for slot {slot}.")
+    if getattr(result, "fingerprint", None):
+        print("Codex auth fingerprint stored.")
 
 
 @app.command()
@@ -120,26 +149,24 @@ def doctor() -> None:
 def add(
     reauth: int | None = typer.Option(None, "--reauth"),
     from_open: bool = typer.Option(False, "--from-open"),
+    import_codex_auth: bool = typer.Option(False, "--import-codex-auth"),
 ) -> None:
     try:
         ensure_supported_platform()
-        if from_open and reauth is not None:
-            raise SwitchGptError("--from-open cannot be combined with --reauth.")
-        service = build_registration_service()
         if from_open:
-            _, page = build_managed_browser().open_workspace()
-            input(
-                "[switchgpt] Complete login in the managed browser, then press ENTER here."
+            raise SwitchGptError(
+                "--from-open is no longer supported. Run `codex login`, then `switchgpt add`."
             )
-            record = service.add_in_managed_workspace(page=page)
-            print(f"Registered {record.email} in slot {record.index}.")
-            return
+        service = build_registration_service()
         if reauth is None:
             record = service.add()
             print(f"Registered {record.email} in slot {record.index}.")
+            _import_codex_auth_for_slot(record.index)
             return
         record = service.reauth(reauth)
         print(f"Reauthenticated {record.email} in slot {record.index}.")
+        if import_codex_auth:
+            _import_codex_auth_for_slot(record.index)
     except CodexAuthSyncFailedError as exc:
         typer.echo(_render_codex_sync_repair_message(str(exc)), err=True)
         raise typer.Exit(code=1) from exc
@@ -175,6 +202,52 @@ def codex_sync() -> None:
     except CodexAuthSyncFailedError as exc:
         typer.echo(_render_codex_sync_repair_message(str(exc)), err=True)
         raise typer.Exit(code=1) from exc
+    except SwitchGptError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("import-codex-auth")
+def import_codex_auth(slot: int = typer.Option(..., "--slot")) -> None:
+    try:
+        ensure_supported_platform()
+        result = build_codex_import_service().run(slot=slot)
+        print(f"Imported Codex auth for slot {slot}.")
+        if getattr(result, "fingerprint", None):
+            print("Codex auth fingerprint stored.")
+    except SwitchGptError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def remove(
+    slot: int | None = typer.Option(None, "--slot"),
+    all: bool = typer.Option(False, "--all"),
+    yes: bool = typer.Option(False, "--yes"),
+) -> None:
+    try:
+        ensure_supported_platform()
+        if slot is None and not all:
+            raise SwitchGptError("Specify either --slot or --all.")
+        if slot is not None and all:
+            raise SwitchGptError("--slot cannot be combined with --all.")
+        if not yes:
+            prompt = (
+                f"Remove registered slot {slot}?"
+                if slot is not None
+                else "Remove all registered accounts?"
+            )
+            if not typer.confirm(prompt):
+                typer.echo("Aborted.", err=True)
+                raise typer.Exit(code=1)
+        service = build_remove_command_service()
+        if slot is not None:
+            service.remove_slot(slot)
+            print(f"Removed slot {slot}.")
+            return
+        result = service.remove_all()
+        print(f"Removed {result.removed_count} registered accounts.")
     except SwitchGptError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc

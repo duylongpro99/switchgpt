@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import platform
 from pathlib import Path
+from contextlib import suppress
 
 from .account_store import AccountStore
 from .codex_auth_sync import (
@@ -16,6 +17,7 @@ from .managed_browser import ManagedBrowser
 from .playwright_client import BrowserRegistrationClient
 from .registration import RegistrationService
 from .secret_store import KeychainSecretStore
+from .secret_store import SessionSecret
 from .status_service import StatusService
 from .switch_history import SwitchHistoryStore
 from .switch_service import SwitchService
@@ -29,6 +31,11 @@ class Runtime:
     secret_store: KeychainSecretStore
     managed_browser: ManagedBrowser
     history_store: SwitchHistoryStore
+
+
+@dataclass(frozen=True)
+class RemoveCommandResult:
+    removed_count: int
 
 
 class CodexSyncCommandService:
@@ -48,13 +55,66 @@ class CodexSyncCommandService:
             raise SwitchError(
                 f"Stored session secret is missing for slot {account.index}."
             )
-        return self._codex_auth_sync.sync_active_slot(
+        result = self._codex_auth_sync.sync_active_slot(
             active_slot=account.index,
             email=account.email,
             session_token=secret.session_token,
             csrf_token=secret.csrf_token,
+            codex_auth_json=getattr(secret, "codex_auth_json", None),
             occurred_at=datetime.now(UTC),
         )
+        return result
+
+class CodexImportCommandService:
+    def __init__(self, account_store, secret_store, codex_auth_sync) -> None:
+        self._account_store = account_store
+        self._secret_store = secret_store
+        self._codex_auth_sync = codex_auth_sync
+
+    def run(self, *, slot: int):
+        account = self._account_store.get_record(slot)
+        secret = self._secret_store.read(account.keychain_key)
+        if secret is None:
+            raise SwitchError(f"Stored session secret is missing for slot {slot}.")
+        auth_json = self._codex_auth_sync.read_live_auth_json()
+        result = self._codex_auth_sync.import_auth_json(
+            slot=slot,
+            occurred_at=datetime.now(UTC),
+        )
+        self._secret_store.replace(
+            account.keychain_key,
+            SessionSecret(
+                session_token=secret.session_token,
+                csrf_token=secret.csrf_token,
+                codex_auth_json=auth_json,
+            ),
+        )
+        if getattr(result, "fingerprint", None):
+            saver = getattr(self._account_store, "save_codex_import_state", None)
+            if callable(saver):
+                saver(slot=slot, fingerprint=result.fingerprint)
+        return result
+
+
+class RemoveCommandService:
+    def __init__(self, account_store, secret_store) -> None:
+        self._account_store = account_store
+        self._secret_store = secret_store
+
+    def remove_slot(self, index: int) -> RemoveCommandResult:
+        account = self._account_store.get_record(index)
+        with suppress(Exception):
+            self._secret_store.delete(account.keychain_key)
+        self._account_store.remove_record(index)
+        return RemoveCommandResult(removed_count=1)
+
+    def remove_all(self) -> RemoveCommandResult:
+        snapshot = self._account_store.load()
+        for account in snapshot.accounts:
+            with suppress(Exception):
+                self._secret_store.delete(account.keychain_key)
+        self._account_store.clear()
+        return RemoveCommandResult(removed_count=len(snapshot.accounts))
 
 
 def build_runtime() -> Runtime:
@@ -76,6 +136,7 @@ def build_registration_service(runtime: Runtime | None = None) -> RegistrationSe
     browser_client = BrowserRegistrationClient(
         base_url=runtime.settings.chatgpt_base_url,
         profile_dir=runtime.settings.managed_profile_dir,
+        codex_auth_file_path=runtime.settings.codex_auth_file_path,
     )
     return RegistrationService(
         runtime.account_store,
@@ -91,10 +152,8 @@ def build_codex_auth_sync_service(
     runtime = build_runtime() if runtime is None else runtime
     return CodexAuthSyncService(
         file_target=CodexFileAuthTarget(
-            managed_browser=runtime.managed_browser,
-            auth_file_path=Path.home() / ".codex" / "auth.json",
+            auth_file_path=runtime.settings.codex_auth_file_path,
         ),
-        env_target=CodexEnvAuthTarget(),
         account_store=runtime.account_store,
     )
 
@@ -144,6 +203,27 @@ def build_codex_sync_command_service(
         runtime.account_store,
         runtime.secret_store,
         build_codex_auth_sync_service(runtime),
+    )
+
+
+def build_codex_import_service(
+    runtime: Runtime | None = None,
+) -> CodexImportCommandService:
+    runtime = build_runtime() if runtime is None else runtime
+    return CodexImportCommandService(
+        runtime.account_store,
+        runtime.secret_store,
+        build_codex_auth_sync_service(runtime),
+    )
+
+
+def build_remove_command_service(
+    runtime: Runtime | None = None,
+) -> RemoveCommandService:
+    runtime = build_runtime() if runtime is None else runtime
+    return RemoveCommandService(
+        runtime.account_store,
+        runtime.secret_store,
     )
 
 

@@ -236,6 +236,9 @@ def test_summarize_reports_codex_sync_drift_when_active_slot_mismatches_last_syn
             method="file",
             synced_at=datetime(2026, 4, 19, 9, 30, tzinfo=UTC),
             error=None,
+            fingerprint="fp-live-1",
+            imported=True,
+            imported_fingerprint="fp-imported-0",
         ),
     )
 

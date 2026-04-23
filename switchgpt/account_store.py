@@ -23,6 +23,8 @@ class AccountStore:
                 last_codex_sync_method=None,
                 last_codex_sync_status=None,
                 last_codex_sync_error=None,
+                last_codex_sync_fingerprint=None,
+                codex_import_fingerprints={},
             )
         try:
             raw_text = self._metadata_path.read_text()
@@ -53,6 +55,10 @@ class AccountStore:
                 last_codex_sync_error=self._load_optional_str(
                     payload, "last_codex_sync_error"
                 ),
+                last_codex_sync_fingerprint=self._load_optional_str(
+                    payload, "last_codex_sync_fingerprint"
+                ),
+                codex_import_fingerprints=self._load_import_fingerprints(payload),
             )
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise AccountStoreError("Malformed account metadata.") from exc
@@ -117,6 +123,19 @@ class AccountStore:
             return None
         return self._require_str(value)
 
+    def _load_import_fingerprints(self, payload: dict[str, object]) -> dict[int, str]:
+        value = payload.get("codex_import_fingerprints")
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise AccountStoreError("Malformed account metadata.")
+        loaded: dict[int, str] = {}
+        for raw_key, raw_value in value.items():
+            if not isinstance(raw_key, str) or not raw_key.isdigit():
+                raise AccountStoreError("Malformed account metadata.")
+            loaded[int(raw_key)] = self._require_str(raw_value)
+        return loaded
+
     @staticmethod
     def _require_int(value: object) -> int:
         if type(value) is not int:
@@ -157,6 +176,64 @@ class AccountStore:
                 last_codex_sync_method=snapshot.last_codex_sync_method,
                 last_codex_sync_status=snapshot.last_codex_sync_status,
                 last_codex_sync_error=snapshot.last_codex_sync_error,
+                last_codex_sync_fingerprint=snapshot.last_codex_sync_fingerprint,
+                codex_import_fingerprints=snapshot.codex_import_fingerprints,
+            )
+        )
+
+    def remove_record(self, index: int) -> None:
+        snapshot = self.load()
+        if not any(account.index == index for account in snapshot.accounts):
+            raise AccountStoreError(f"Account slot {index} is not registered.")
+        accounts = [account for account in snapshot.accounts if account.index != index]
+        active_account_index = snapshot.active_account_index
+        last_switch_at = snapshot.last_switch_at
+        last_codex_sync_at = snapshot.last_codex_sync_at
+        last_codex_sync_slot = snapshot.last_codex_sync_slot
+        last_codex_sync_method = snapshot.last_codex_sync_method
+        last_codex_sync_status = snapshot.last_codex_sync_status
+        last_codex_sync_error = snapshot.last_codex_sync_error
+        last_codex_sync_fingerprint = snapshot.last_codex_sync_fingerprint
+        codex_import_fingerprints = dict(snapshot.codex_import_fingerprints)
+        if active_account_index == index:
+            active_account_index = None
+            last_switch_at = None
+        if last_codex_sync_slot == index:
+            last_codex_sync_at = None
+            last_codex_sync_slot = None
+            last_codex_sync_method = None
+            last_codex_sync_status = None
+            last_codex_sync_error = None
+            last_codex_sync_fingerprint = None
+        codex_import_fingerprints.pop(index, None)
+        self._write_snapshot(
+            AccountSnapshot(
+                accounts=accounts,
+                active_account_index=active_account_index,
+                last_switch_at=last_switch_at,
+                last_codex_sync_at=last_codex_sync_at,
+                last_codex_sync_slot=last_codex_sync_slot,
+                last_codex_sync_method=last_codex_sync_method,
+                last_codex_sync_status=last_codex_sync_status,
+                last_codex_sync_error=last_codex_sync_error,
+                last_codex_sync_fingerprint=last_codex_sync_fingerprint,
+                codex_import_fingerprints=codex_import_fingerprints,
+            )
+        )
+
+    def clear(self) -> None:
+        self._write_snapshot(
+            AccountSnapshot(
+                accounts=[],
+                active_account_index=None,
+                last_switch_at=None,
+                last_codex_sync_at=None,
+                last_codex_sync_slot=None,
+                last_codex_sync_method=None,
+                last_codex_sync_status=None,
+                last_codex_sync_error=None,
+                last_codex_sync_fingerprint=None,
+                codex_import_fingerprints={},
             )
         )
 
@@ -174,6 +251,8 @@ class AccountStore:
                 last_codex_sync_method=snapshot.last_codex_sync_method,
                 last_codex_sync_status=snapshot.last_codex_sync_status,
                 last_codex_sync_error=snapshot.last_codex_sync_error,
+                last_codex_sync_fingerprint=snapshot.last_codex_sync_fingerprint,
+                codex_import_fingerprints=snapshot.codex_import_fingerprints,
             )
         )
 
@@ -184,6 +263,7 @@ class AccountStore:
         method: str | None,
         status: str | None,
         error: str | None,
+        fingerprint: str | None = None,
     ) -> None:
         snapshot = self.load()
         self._write_snapshot(
@@ -196,6 +276,27 @@ class AccountStore:
                 last_codex_sync_method=method,
                 last_codex_sync_status=status,
                 last_codex_sync_error=error,
+                last_codex_sync_fingerprint=fingerprint,
+                codex_import_fingerprints=snapshot.codex_import_fingerprints,
+            )
+        )
+
+    def save_codex_import_state(self, *, slot: int, fingerprint: str) -> None:
+        snapshot = self.load()
+        fingerprints = dict(snapshot.codex_import_fingerprints)
+        fingerprints[slot] = fingerprint
+        self._write_snapshot(
+            AccountSnapshot(
+                accounts=snapshot.accounts,
+                active_account_index=snapshot.active_account_index,
+                last_switch_at=snapshot.last_switch_at,
+                last_codex_sync_at=snapshot.last_codex_sync_at,
+                last_codex_sync_slot=snapshot.last_codex_sync_slot,
+                last_codex_sync_method=snapshot.last_codex_sync_method,
+                last_codex_sync_status=snapshot.last_codex_sync_status,
+                last_codex_sync_error=snapshot.last_codex_sync_error,
+                last_codex_sync_fingerprint=snapshot.last_codex_sync_fingerprint,
+                codex_import_fingerprints=fingerprints,
             )
         )
 
@@ -217,6 +318,11 @@ class AccountStore:
             "last_codex_sync_method": snapshot.last_codex_sync_method,
             "last_codex_sync_status": snapshot.last_codex_sync_status,
             "last_codex_sync_error": snapshot.last_codex_sync_error,
+            "last_codex_sync_fingerprint": snapshot.last_codex_sync_fingerprint,
+            "codex_import_fingerprints": {
+                str(slot): fingerprint
+                for slot, fingerprint in snapshot.codex_import_fingerprints.items()
+            },
             "accounts": [
                 {
                     **asdict(account),

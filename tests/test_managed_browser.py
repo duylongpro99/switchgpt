@@ -126,8 +126,8 @@ class FakePlaywrightHandle:
         self.stopped = False
         self.launches = []
 
-    def launch_persistent_context(self, profile_dir: str, headless: bool):
-        self.launches.append((profile_dir, headless))
+    def launch_persistent_context(self, profile_dir: str, **kwargs):
+        self.launches.append((profile_dir, kwargs))
         return self.context
 
     def stop(self) -> None:
@@ -203,9 +203,9 @@ def test_open_workspace_creates_profile_dir_and_returns_runtime_handles(tmp_path
             return FakePage()
 
     class FakeChromium:
-        def launch_persistent_context(self, profile_dir: str, headless: bool):
+        def launch_persistent_context(self, profile_dir: str, **kwargs):
             launched["profile_dir"] = profile_dir
-            launched["headless"] = headless
+            launched.update(kwargs)
             return FakeBrowserContext()
 
     class FakePlaywrightHandle:
@@ -223,6 +223,8 @@ def test_open_workspace_creates_profile_dir_and_returns_runtime_handles(tmp_path
     assert (tmp_path / "profile").exists()
     assert Path(launched["profile_dir"]) == tmp_path / "profile"
     assert launched["headless"] is False
+    assert launched["ignore_default_args"] == ["--enable-automation"]
+    assert launched["args"] == ["--disable-blink-features=AutomationControlled"]
     assert launched["goto"] == "https://chatgpt.com"
     assert context is not None
     assert page is not None
@@ -270,6 +272,54 @@ def test_open_workspace_applies_stealth_launch_flags_when_enabled(tmp_path, monk
     assert launched["kwargs"]["args"] == ["--disable-blink-features=AutomationControlled"]
 
 
+def test_open_workspace_applies_stealth_launch_flags_by_default(tmp_path, monkeypatch) -> None:
+    launched: dict[str, object] = {}
+
+    class FakePage:
+        def goto(self, url: str) -> None:
+            return None
+
+    class FakeBrowserContext:
+        def __init__(self) -> None:
+            self.pages = []
+
+        def add_init_script(self, script: str) -> None:
+            return None
+
+        def new_page(self):
+            return FakePage()
+
+    class FakeChromium:
+        def launch_persistent_context(self, profile_dir: str, **kwargs):
+            launched["profile_dir"] = profile_dir
+            launched["kwargs"] = kwargs
+            return FakeBrowserContext()
+
+    class FakePlaywrightHandle:
+        chromium = FakeChromium()
+
+    class FakePlaywrightFactory:
+        def start(self):
+            return FakePlaywrightHandle()
+
+    monkeypatch.delenv("SWITCHGPT_BROWSER_STEALTH", raising=False)
+    monkeypatch.setattr("switchgpt.managed_browser.sync_playwright", lambda: FakePlaywrightFactory())
+
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=tmp_path / "profile")
+    browser.open_workspace()
+
+    assert launched["kwargs"]["headless"] is False
+    assert launched["kwargs"]["ignore_default_args"] == ["--enable-automation"]
+    assert launched["kwargs"]["args"] == ["--disable-blink-features=AutomationControlled"]
+
+
+def test_managed_browser_stealth_can_be_disabled_with_env(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SWITCHGPT_BROWSER_STEALTH", "off")
+    browser = ManagedBrowser("https://chatgpt.com", profile_dir=tmp_path / "profile")
+
+    assert browser._is_stealth_enabled() is False
+
+
 def test_open_workspace_falls_back_when_configured_channel_unavailable(
     tmp_path,
     monkeypatch,
@@ -308,8 +358,17 @@ def test_open_workspace_falls_back_when_configured_channel_unavailable(
     context, page = browser.open_workspace()
 
     assert launched == [
-        {"headless": False, "channel": "chrome"},
-        {"headless": False},
+        {
+            "headless": False,
+            "channel": "chrome",
+            "ignore_default_args": ["--enable-automation"],
+            "args": ["--disable-blink-features=AutomationControlled"],
+        },
+        {
+            "headless": False,
+            "ignore_default_args": ["--enable-automation"],
+            "args": ["--disable-blink-features=AutomationControlled"],
+        },
     ]
     assert context is not None
     assert page is not None
@@ -403,7 +462,7 @@ def test_open_workspace_relaunches_when_cached_context_is_broken(tmp_path, monke
 
 def test_open_workspace_stops_new_playwright_when_launch_fails(tmp_path, monkeypatch) -> None:
     class FailingChromium:
-        def launch_persistent_context(self, profile_dir: str, headless: bool):
+        def launch_persistent_context(self, profile_dir: str, **kwargs):
             raise RuntimeError("launch failed")
 
     class FailingPlaywrightHandle:
@@ -489,7 +548,7 @@ def test_can_open_workspace_returns_true_when_workspace_probe_succeeds(tmp_path,
 
 def test_can_open_workspace_returns_false_when_workspace_probe_fails(tmp_path, monkeypatch) -> None:
     class FailingChromium:
-        def launch_persistent_context(self, profile_dir: str, headless: bool):
+        def launch_persistent_context(self, profile_dir: str, **kwargs):
             raise RuntimeError("runtime unavailable")
 
     class FailingPlaywrightHandle:

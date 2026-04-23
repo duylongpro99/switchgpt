@@ -54,6 +54,7 @@ class Settings:
     chatgpt_base_url: str
     managed_profile_dir: Path
     switch_history_path: Path
+    codex_auth_file_path: Path
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -70,6 +71,10 @@ class Settings:
             chatgpt_base_url=chatgpt_base_url,
             managed_profile_dir=data_dir / "playwright-profile",
             switch_history_path=data_dir / "switch-history.jsonl",
+            codex_auth_file_path=Path(
+                get_env("SWITCHGPT_CODEX_AUTH_PATH", str(home / ".codex" / "auth.json"))
+                or str(home / ".codex" / "auth.json")
+            ),
         )
 
     def describe_items(self) -> list[SettingsItem]:
@@ -122,6 +127,13 @@ class Settings:
                 category="runtime-state",
                 secret=False,
                 description="JSONL history of account switches on disk.",
+            ),
+            SettingsItem(
+                name="codex_auth_file_path",
+                value=str(self.codex_auth_file_path),
+                category="runtime-state",
+                secret=False,
+                description="Codex auth JSON file used for file-backed session sync.",
             ),
         ]
 

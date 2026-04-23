@@ -39,3 +39,5 @@ class AccountSnapshot:
     last_codex_sync_method: str | None
     last_codex_sync_status: str | None
     last_codex_sync_error: str | None
+    last_codex_sync_fingerprint: str | None
+    codex_import_fingerprints: dict[int, str]

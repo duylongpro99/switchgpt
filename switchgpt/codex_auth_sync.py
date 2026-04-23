@@ -1,39 +1,89 @@
-import base64
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
-import secrets
-import threading
-from typing import Any
+import re
 from typing import Protocol
-from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlencode, urlparse
-from urllib.request import Request, urlopen
 
 from .diagnostics import redact_text
 from .errors import CodexAuthSyncFailedError
 
 
-KNOWN_FAILURE_CLASSES = {
-    "codex-auth-target-missing",
-    "codex-auth-format-unsupported",
-    "codex-auth-write-failed",
-    "codex-auth-verify-failed",
-    "codex-auth-fallback-failed",
-}
-FALLBACK_ELIGIBLE_FAILURE_CLASSES = {
-    "codex-auth-target-missing",
-    "codex-auth-format-unsupported",
+_REQUIRED_TOKEN_KEYS = ("access_token", "refresh_token", "id_token", "account_id")
+_KNOWN_FAILURE_PREFIXES = {
+    "codex-auth-source-missing",
+    "codex-auth-format-invalid",
     "codex-auth-write-failed",
     "codex-auth-verify-failed",
 }
+_TOKEN_REDACTION_PATTERN = re.compile(
+    r"\b(?P<key>access_token|refresh_token|id_token|account_id)=(?P<value>[^\s,;]+)"
+)
 
 
 class CodexAuthTarget(Protocol):
-    def apply(self, *, email: str, session_token: str, csrf_token: str | None) -> str: ...
+    def read_source_auth_json(self) -> dict[str, object]: ...
+
+    def apply_auth_json(
+        self,
+        payload: dict[str, object],
+        *,
+        occurred_at: datetime,
+    ) -> None: ...
+
+def _normalize_auth_json_payload(
+    payload: object,
+    *,
+    occurred_at: datetime | None,
+) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        raise RuntimeError("codex-auth-format-invalid: auth.json must be a JSON object")
+
+    tokens = payload.get("tokens")
+    if not isinstance(tokens, dict):
+        raise RuntimeError("codex-auth-format-invalid: auth.json missing tokens object")
+
+    normalized_tokens: dict[str, str] = {}
+    for key in _REQUIRED_TOKEN_KEYS:
+        value = tokens.get(key)
+        if type(value) is not str or not value:
+            raise RuntimeError(
+                f"codex-auth-format-invalid: auth.json missing tokens.{key}"
+            )
+        normalized_tokens[key] = value
+
+    normalized: dict[str, object] = dict(payload)
+    normalized["OPENAI_API_KEY"] = None
+    normalized["auth_mode"] = "chatgpt"
+    normalized["tokens"] = normalized_tokens
+
+    last_refresh = payload.get("last_refresh")
+    if type(last_refresh) is str and last_refresh:
+        normalized["last_refresh"] = last_refresh
+    elif occurred_at is not None:
+        normalized["last_refresh"] = (
+            occurred_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        )
+    else:
+        normalized.pop("last_refresh", None)
+
+    return normalized
+
+
+def _fingerprint_auth_json_payload(payload: dict[str, object]) -> str:
+    fingerprint_payload = {
+        "auth_mode": payload.get("auth_mode"),
+        "tokens": payload.get("tokens"),
+    }
+    encoded = json.dumps(
+        fingerprint_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -42,6 +92,7 @@ class CodexSyncResult:
     method: str | None
     failure_class: str | None
     message: str | None
+    fingerprint: str | None = None
 
 
 class CodexAuthSyncService:
@@ -49,12 +100,36 @@ class CodexAuthSyncService:
         self,
         *,
         file_target: CodexAuthTarget,
-        env_target: CodexAuthTarget,
+        env_target=None,
         account_store=None,
     ) -> None:
+        del env_target
         self._file_target = file_target
-        self._env_target = env_target
         self._account_store = account_store
+
+    def import_auth_json(self, *, slot: int, occurred_at: datetime) -> CodexSyncResult:
+        try:
+            payload = self._file_target.read_source_auth_json()
+            normalized = self._normalize_auth_json(payload)
+            fingerprint = self._fingerprint_auth_json(normalized)
+        except Exception as exc:
+            return self._finalize_result(
+                occurred_at=occurred_at,
+                active_slot=slot,
+                result=self._failure_result(exc),
+            )
+
+        return self._finalize_result(
+            occurred_at=occurred_at,
+            active_slot=slot,
+            result=CodexSyncResult(
+                outcome="imported",
+                method="file",
+                failure_class=None,
+                message=None,
+                fingerprint=fingerprint,
+            ),
+        )
 
     def sync_active_slot(
         self,
@@ -63,85 +138,102 @@ class CodexAuthSyncService:
         email: str,
         session_token: str,
         csrf_token: str | None,
+        codex_auth_json: dict[str, object] | None = None,
         occurred_at: datetime,
     ) -> CodexSyncResult:
-        try:
-            method = self._file_target.apply(
-                email=email,
-                session_token=session_token,
-                csrf_token=csrf_token,
-            )
-        except Exception as exc:
-            failure_class = self._known_failure_class(exc)
-            if failure_class not in FALLBACK_ELIGIBLE_FAILURE_CLASSES:
-                return self._finalize_result(
-                    occurred_at=occurred_at,
-                    active_slot=active_slot,
-                    result=CodexSyncResult(
-                        outcome="failed",
-                        method=None,
-                        failure_class=self._classify_error(exc),
-                        message=redact_text(str(exc)),
-                    ),
-                )
-        else:
-            return self._finalize_result(
-                occurred_at=occurred_at,
-                active_slot=active_slot,
-                result=CodexSyncResult(
-                    outcome="ok",
-                    method=method,
-                    failure_class=None,
-                    message=None,
-                ),
-            )
-
-        try:
-            method = self._env_target.apply(
-                email=email,
-                session_token=session_token,
-                csrf_token=csrf_token,
-            )
-        except Exception as exc:
+        if codex_auth_json is None:
             return self._finalize_result(
                 occurred_at=occurred_at,
                 active_slot=active_slot,
                 result=CodexSyncResult(
                     outcome="failed",
                     method=None,
-                    failure_class=self._classify_error(exc),
-                    message=redact_text(str(exc)),
+                    failure_class="codex-auth-source-missing",
+                    message=(
+                        "codex-auth-source-missing: no imported auth.json stored for this slot"
+                    ),
                 ),
+            )
+
+        try:
+            normalized = self._normalize_auth_json(codex_auth_json)
+            self._file_target.apply_auth_json(normalized, occurred_at=occurred_at)
+        except Exception as exc:
+            return self._finalize_result(
+                occurred_at=occurred_at,
+                active_slot=active_slot,
+                result=self._failure_result(exc),
             )
 
         return self._finalize_result(
             occurred_at=occurred_at,
             active_slot=active_slot,
             result=CodexSyncResult(
-                outcome="fallback-ok",
-                method=method,
+                outcome="ok",
+                method="file",
                 failure_class=None,
                 message=None,
+                fingerprint=self._fingerprint_auth_json(normalized),
             ),
         )
 
-    def _known_failure_class(self, exc: Exception) -> str | None:
-        message = str(exc)
-        if message in KNOWN_FAILURE_CLASSES:
-            return message
-        return None
+    def fingerprint_auth_json(self, payload: dict[str, object]) -> str:
+        return self._fingerprint_auth_json(self._normalize_auth_json(payload))
 
-    def _classify_error(self, exc: Exception) -> str:
-        failure_class = self._known_failure_class(exc)
-        if failure_class is not None:
-            return failure_class
+    def has_drift(
+        self,
+        *,
+        stored_auth_json: dict[str, object] | None,
+        live_fingerprint: str | None,
+    ) -> bool:
+        if stored_auth_json is None or live_fingerprint is None:
+            return False
+        return self.fingerprint_auth_json(stored_auth_json) != live_fingerprint
+
+    def read_live_fingerprint(self) -> str | None:
+        try:
+            payload = self._file_target.read_source_auth_json()
+            return self._fingerprint_auth_json(self._normalize_auth_json(payload))
+        except Exception:
+            return None
+
+    def read_live_auth_json(self) -> dict[str, object]:
+        return self._normalize_auth_json(self._file_target.read_source_auth_json())
+
+    def _normalize_auth_json(self, payload: object) -> dict[str, object]:
+        return _normalize_auth_json_payload(payload, occurred_at=None)
+
+    def _fingerprint_auth_json(self, payload: dict[str, object]) -> str:
+        return _fingerprint_auth_json_payload(payload)
+
+    def _failure_result(self, exc: Exception) -> CodexSyncResult:
+        message = self._redact_failure_message(str(exc)) or "Codex auth sync failed."
+        failure_class = self._classify_error(message)
+        return CodexSyncResult(
+            outcome="failed",
+            method=None,
+            failure_class=failure_class,
+            message=message,
+        )
+
+    def _redact_failure_message(self, message: str) -> str:
+        redacted = redact_text(message) or ""
+        return _TOKEN_REDACTION_PATTERN.sub(
+            lambda match: f"{match.group('key')}=[redacted]",
+            redacted,
+        )
+
+    def _classify_error(self, message: str) -> str:
+        for failure_class in _KNOWN_FAILURE_PREFIXES:
+            if message == failure_class or message.startswith(f"{failure_class}:"):
+                return failure_class
         return "codex-auth-write-failed"
 
     def _finalize_result(
         self,
         *,
         occurred_at: datetime,
-        active_slot: int,
+        active_slot: int | None,
         result: CodexSyncResult,
     ) -> CodexSyncResult:
         if self._account_store is not None:
@@ -152,7 +244,19 @@ class CodexAuthSyncService:
                     method=result.method,
                     status=result.outcome,
                     error=result.failure_class,
+                    fingerprint=result.fingerprint,
                 )
+            except TypeError:
+                try:
+                    self._account_store.save_codex_sync_state(
+                        synced_at=occurred_at,
+                        synced_slot=active_slot,
+                        method=result.method,
+                        status=result.outcome,
+                        error=result.failure_class,
+                    )
+                except Exception:
+                    pass
             except Exception:
                 pass
         return result
@@ -162,200 +266,65 @@ class CodexFileAuthTarget:
     def __init__(
         self,
         *,
-        managed_browser=None,
         auth_file_path: Path | None = None,
-        authorization_endpoint: str = "https://auth.openai.com/authorize",
-        token_endpoint: str = "https://auth0.openai.com/oauth/token",
-        client_id: str = "app_EMoamEEZ73f0CkXaXp7hrann",
-        callback_port: int = 1455,
     ) -> None:
-        self._managed_browser = managed_browser
         self._auth_file_path = auth_file_path
-        self._authorization_endpoint = authorization_endpoint
-        self._token_endpoint = token_endpoint
-        self._client_id = client_id
-        self._callback_port = callback_port
 
-    def apply(self, *, email: str, session_token: str, csrf_token: str | None) -> str:
-        if self._managed_browser is None or self._auth_file_path is None:
-            raise RuntimeError("codex-auth-target-missing")
-
-        context, page = self._managed_browser.ensure_runtime()
-        self._managed_browser.prepare_switch(
-            context,
-            page,
-            session_token=session_token,
-            csrf_token=csrf_token,
-        )
-        tokens = self._run_oauth_code_flow(page, email)
-        account_id = self._extract_chatgpt_account_id(tokens.get("id_token"))
-        if account_id is None:
-            raise RuntimeError("codex-auth-verify-failed")
-        self._write_auth_file(
-            {
-                "OPENAI_API_KEY": None,
-                "auth_mode": "chatgpt",
-                "last_refresh": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-                "tokens": {
-                    "access_token": tokens["access_token"],
-                    "refresh_token": tokens["refresh_token"],
-                    "id_token": tokens["id_token"],
-                    "account_id": account_id,
-                },
-            }
-        )
-        return "file"
-
-    def _run_oauth_code_flow(self, page, email: str) -> dict[str, str]:
-        del email
-        redirect_uri = f"http://localhost:{self._callback_port}/auth/callback"
-        code_verifier = self._build_code_verifier()
-        state = secrets.token_urlsafe(24)
-        callback = self._wait_for_callback(page, redirect_uri, code_verifier, state)
-        code = callback.get("code")
-        if not isinstance(code, str) or not code:
-            raise RuntimeError("codex-auth-verify-failed")
-        return self._exchange_code(
-            code=code,
-            redirect_uri=redirect_uri,
-            code_verifier=code_verifier,
-        )
-
-    def _wait_for_callback(
-        self,
-        page,
-        redirect_uri: str,
-        code_verifier: str,
-        state: str,
-    ) -> dict[str, str]:
-        callback: dict[str, str] = {}
-        error: dict[str, str] = {}
-        challenge = self._build_code_challenge(code_verifier)
-        authorize_url = (
-            f"{self._authorization_endpoint}?"
-            + urlencode(
-                {
-                    "response_type": "code",
-                    "client_id": self._client_id,
-                    "redirect_uri": redirect_uri,
-                    "scope": "openid profile email offline_access",
-                    "state": state,
-                    "code_challenge": challenge,
-                    "code_challenge_method": "S256",
-                }
-            )
-        )
-
-        class CallbackHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                parsed = urlparse(self.path)
-                query = parse_qs(parsed.query)
-                if parsed.path != "/auth/callback":
-                    self.send_response(404)
-                    self.end_headers()
-                    return
-                if query.get("state", [None])[0] != state:
-                    error["message"] = "codex-auth-verify-failed"
-                elif "error" in query:
-                    error["message"] = "codex-auth-verify-failed"
-                else:
-                    code = query.get("code", [None])[0]
-                    if isinstance(code, str) and code:
-                        callback["code"] = code
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b"Codex login completed. You can close this window.")
-
-            def log_message(self, format, *args):
-                del format, args
+    def read_source_auth_json(self) -> dict[str, object]:
+        auth_file_path = self._require_auth_file_path()
+        if not auth_file_path.exists():
+            raise RuntimeError("codex-auth-source-missing: live auth.json file not found")
 
         try:
-            server = HTTPServer(("127.0.0.1", self._callback_port), CallbackHandler)
+            payload = json.loads(auth_file_path.read_text(encoding="utf-8"))
         except OSError as exc:
-            raise RuntimeError("codex-auth-write-failed") from exc
+            raise RuntimeError("codex-auth-write-failed: unable to read auth.json") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("codex-auth-format-invalid: auth.json is not valid JSON") from exc
 
-        thread = threading.Thread(target=server.handle_request, daemon=True)
-        thread.start()
-        try:
-            page.goto(authorize_url, wait_until="domcontentloaded", timeout=60_000)
-            thread.join(timeout=60)
-        finally:
-            server.server_close()
-        if error:
-            raise RuntimeError(error["message"])
-        if "code" not in callback:
-            raise RuntimeError("codex-auth-verify-failed")
-        return callback
+        if not isinstance(payload, dict):
+            raise RuntimeError("codex-auth-format-invalid: auth.json must be a JSON object")
+        return payload
 
-    def _exchange_code(
+    def apply_auth_json(
         self,
+        payload: dict[str, object],
         *,
-        code: str,
-        redirect_uri: str,
-        code_verifier: str,
-    ) -> dict[str, str]:
-        body = urlencode(
-            {
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-                "client_id": self._client_id,
-                "code_verifier": code_verifier,
-            }
-        ).encode("utf-8")
-        request = Request(
-            self._token_endpoint,
-            data=body,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=30) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise RuntimeError("codex-auth-write-failed") from exc
-        required = ("access_token", "refresh_token", "id_token")
-        if any(not isinstance(payload.get(key), str) or not payload.get(key) for key in required):
-            raise RuntimeError("codex-auth-verify-failed")
-        return {key: payload[key] for key in required}
-
-    def _extract_chatgpt_account_id(self, id_token: str | None) -> str | None:
-        if not isinstance(id_token, str) or "." not in id_token:
-            return None
-        try:
-            payload_segment = id_token.split(".")[1]
-            payload_segment += "=" * (-len(payload_segment) % 4)
-            payload = json.loads(base64.urlsafe_b64decode(payload_segment))
-        except (ValueError, json.JSONDecodeError):
-            return None
-        auth_claim = payload.get("https://api.openai.com/auth")
-        if not isinstance(auth_claim, dict):
-            return None
-        account_id = auth_claim.get("chatgpt_account_id")
-        return account_id if isinstance(account_id, str) and account_id else None
-
-    def _write_auth_file(self, payload: dict[str, Any]) -> None:
-        auth_file_path = self._auth_file_path
-        if auth_file_path is None:
-            raise RuntimeError("codex-auth-target-missing")
-        auth_file_path.parent.mkdir(parents=True, exist_ok=True)
+        occurred_at: datetime,
+    ) -> None:
+        auth_file_path = self._require_auth_file_path()
+        normalized = _normalize_auth_json_payload(payload, occurred_at=occurred_at)
+        normalized["last_refresh"] = occurred_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
         temp_path = auth_file_path.with_suffix(auth_file_path.suffix + ".tmp")
-        temp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        temp_path.replace(auth_file_path)
 
-    def _build_code_verifier(self) -> str:
-        return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
+        try:
+            auth_file_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path.write_text(
+                json.dumps(normalized, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            temp_path.replace(auth_file_path)
+        except OSError as exc:
+            raise RuntimeError("codex-auth-write-failed: unable to write auth.json") from exc
 
-    def _build_code_challenge(self, code_verifier: str) -> str:
-        digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
-        return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    def _require_auth_file_path(self) -> Path:
+        if self._auth_file_path is None:
+            raise RuntimeError("codex-auth-source-missing: auth.json path is not configured")
+        return self._auth_file_path
 
 
 class CodexEnvAuthTarget:
-    def apply(self, *, email: str, session_token: str, csrf_token: str | None) -> str:
-        del email, session_token, csrf_token
-        raise RuntimeError("codex-auth-target-missing")
+    def read_source_auth_json(self) -> dict[str, object]:
+        raise RuntimeError("codex-auth-source-missing: env projection is not supported")
 
+    def apply_auth_json(
+        self,
+        payload: dict[str, object],
+        *,
+        occurred_at: datetime,
+    ) -> None:
+        del payload, occurred_at
+        raise RuntimeError("codex-auth-source-missing: env projection is not supported")
 
 def raise_for_failed_sync(result: CodexSyncResult) -> None:
     if result.outcome != "failed":

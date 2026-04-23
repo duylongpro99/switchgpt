@@ -36,6 +36,9 @@ class PersistedCodexSyncState:
     method: str | None
     synced_at: datetime | None
     error: str | None
+    fingerprint: str | None
+    imported: bool
+    imported_fingerprint: str | None
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,11 @@ class StatusService:
             next_action = (
                 "Run `switchgpt codex-sync` to resync Codex auth to the active slot."
             )
+        elif readiness == "ready" and codex_sync.state == "missing":
+            readiness = "degraded"
+            next_action = (
+                f"Run `codex login` with the target account, then `switchgpt import-codex-auth --slot {active_account_index}`."
+            )
 
         return StatusSummary(
             slots=slots,
@@ -179,9 +187,18 @@ class StatusService:
                 synced_at=None,
                 error=None,
             )
+        if not codex_sync_state.imported:
+            return CodexSyncStatus(
+                state="missing",
+                method=codex_sync_state.method,
+                synced_at=codex_sync_state.synced_at,
+                error=codex_sync_state.error,
+            )
         if (
-            codex_sync_state.status in {"ok", "fallback-ok"}
+            codex_sync_state.status == "ok"
             and codex_sync_state.synced_slot == active_account_index
+            and codex_sync_state.fingerprint is not None
+            and codex_sync_state.fingerprint == codex_sync_state.imported_fingerprint
         ):
             state = "in-sync"
         else:

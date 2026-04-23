@@ -1,8 +1,10 @@
-# SwitchGPT Auth 403 and Switch Fix (2026-04-19)
+# SwitchGPT Auth 403 and Switch Fix (2026-04-19, updated 2026-04-22)
 
 ## Context
 
-During account registration and switching, the flow failed in Playwright-managed Chrome while normal Chrome login worked.
+During account registration and switching, the ChatGPT browser flow failed in Playwright-managed Chrome while normal Chrome login worked.
+
+As of 2026-04-22, this note applies only to ChatGPT browser-session capture and switching. Codex auth repair no longer depends on browser OAuth recovery; it now uses manual `codex login` plus `switchgpt import-codex-auth --slot <n>`.
 
 ## Symptoms Observed
 
@@ -51,7 +53,7 @@ During account registration and switching, the flow failed in Playwright-managed
 - Email extraction now checks `/api/auth/session` first and falls back to body-text regex only when needed.
 - This prevents `unknown@example.com` for authenticated sessions where UI text does not contain the email.
 
-## Correct Runtime Commands
+## Current Runtime Commands
 
 Use one line:
 
@@ -71,10 +73,19 @@ Switching:
 uv run switchgpt switch --to 0
 ```
 
+Codex auth import for a slot:
+
+```bash
+codex login
+uv run switchgpt import-codex-auth --slot 0
+uv run switchgpt codex-sync
+```
+
 ## Notes
 
 - `email: "unknown@example.com"` should now be rare and indicates neither session API nor body extraction exposed an email at capture time.
 - `active_account_index: null` is expected until a successful `switch` updates active slot state.
+- If `status` or `doctor` reports missing or drifted Codex auth, the supported fix is manual `codex login` followed by `switchgpt import-codex-auth --slot <n>`.
 
 ## Verification Status
 

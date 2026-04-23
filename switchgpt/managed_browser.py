@@ -15,6 +15,7 @@ LIMIT_DETECTION_MARKERS = (
 RUNTIME_PROBE_TIMEOUT_MS = 5000
 DEFAULT_BROWSER_CHANNEL = "chrome"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 @dataclass
@@ -37,7 +38,12 @@ class ManagedBrowser:
 
     def _is_stealth_enabled(self) -> bool:
         value = get_env("SWITCHGPT_BROWSER_STEALTH", "") or ""
-        return value.strip().lower() in _TRUE_VALUES
+        normalized = value.strip().lower()
+        if not normalized:
+            return True
+        if normalized in _FALSE_VALUES:
+            return False
+        return normalized in _TRUE_VALUES
 
     def _stealth_launch_kwargs(self) -> dict[str, object]:
         if not self._is_stealth_enabled():

@@ -116,11 +116,30 @@ class DoctorService:
         sync_method = getattr(snapshot, "last_codex_sync_method", None)
         sync_at = getattr(snapshot, "last_codex_sync_at", None)
         sync_error = redact_text(getattr(snapshot, "last_codex_sync_error", None) or "")
+        sync_fingerprint = getattr(snapshot, "last_codex_sync_fingerprint", None)
+        import_fingerprints = getattr(snapshot, "codex_import_fingerprints", {}) or {}
+        imported_fingerprint = import_fingerprints.get(active_slot)
+        import_action = (
+            f"Run `codex login` with the target account, then `switchgpt import-codex-auth --slot {active_slot}`, then rerun `switchgpt doctor`."
+        )
         repair_action = (
             "Run `switchgpt codex-sync` for the active slot, then rerun `switchgpt doctor`."
         )
 
-        if sync_status in {"ok", "fallback-ok"} and sync_slot == active_slot:
+        if imported_fingerprint is None:
+            return DoctorCheck(
+                "codex-sync",
+                "warn",
+                f"No imported Codex auth recorded for active slot {active_slot}.",
+                import_action,
+            )
+
+        if (
+            sync_status == "ok"
+            and sync_slot == active_slot
+            and sync_fingerprint is not None
+            and sync_fingerprint == imported_fingerprint
+        ):
             method_suffix = f" via {sync_method}" if sync_method is not None else ""
             time_suffix = f" at {sync_at.isoformat()}" if sync_at is not None else ""
             return DoctorCheck(
@@ -151,17 +170,14 @@ class DoctorService:
             return DoctorCheck(
                 "codex-sync",
                 "warn",
-                f"No successful Codex sync recorded for active slot {active_slot}.",
+                f"No successful Codex sync recorded for active slot {active_slot} after import.",
                 repair_action,
             )
 
         return DoctorCheck(
             "codex-sync",
             "warn",
-            (
-                f"Active slot {active_slot} does not match the last Codex sync slot "
-                f"{sync_slot}."
-            ),
+            f"Active slot {active_slot} has imported Codex auth, but the projected live auth is out of sync.",
             repair_action,
         )
 
