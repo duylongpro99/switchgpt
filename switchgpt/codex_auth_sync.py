@@ -294,7 +294,6 @@ class CodexFileAuthTarget:
     ) -> None:
         auth_file_path = self._require_auth_file_path()
         normalized = _normalize_auth_json_payload(payload, occurred_at=occurred_at)
-        normalized["last_refresh"] = occurred_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
         temp_path = auth_file_path.with_suffix(auth_file_path.suffix + ".tmp")
 
         try:

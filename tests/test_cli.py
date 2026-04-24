@@ -672,6 +672,7 @@ def test_render_status_summary_includes_codex_sync_lines() -> None:
                 (),
                 {
                     "state": "out-of-sync",
+                    "detail": "projection only; token validity is not live-verified",
                     "method": "env-fallback",
                     "synced_at": datetime(2026, 4, 19, 10, 30, tzinfo=UTC),
                     "error": "codex-auth-write-failed",
@@ -683,6 +684,7 @@ def test_render_status_summary_includes_codex_sync_lines() -> None:
     lines = render_status_summary(summary)
 
     assert "Codex sync: out-of-sync" in lines
+    assert "Codex auth check: projection only; token validity is not live-verified" in lines
     assert "Codex sync method: env-fallback" in lines
     assert "Codex sync at: 2026-04-19T10:30:00+00:00" in lines
     assert "Codex sync error: codex-auth-write-failed" in lines

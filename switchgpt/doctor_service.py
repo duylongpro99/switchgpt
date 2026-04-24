@@ -145,7 +145,7 @@ class DoctorService:
             return DoctorCheck(
                 "codex-sync",
                 "pass",
-                f"Active slot matches the last successful Codex sync{method_suffix}{time_suffix}.",
+                f"Active slot matches the last successful local Codex auth projection{method_suffix}{time_suffix}.",
                 None,
             )
 

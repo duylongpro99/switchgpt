@@ -44,6 +44,7 @@ class PersistedCodexSyncState:
 @dataclass(frozen=True)
 class CodexSyncStatus:
     state: str
+    detail: str
     method: str | None
     synced_at: datetime | None
     error: str | None
@@ -174,6 +175,7 @@ class StatusService:
         if active_account_index is None:
             return CodexSyncStatus(
                 state="no-data",
+                detail="projection state unavailable; token validity is not live-verified",
                 method=(None if codex_sync_state is None else codex_sync_state.method),
                 synced_at=(
                     None if codex_sync_state is None else codex_sync_state.synced_at
@@ -183,6 +185,7 @@ class StatusService:
         if codex_sync_state is None:
             return CodexSyncStatus(
                 state="no-data",
+                detail="projection state unavailable; token validity is not live-verified",
                 method=None,
                 synced_at=None,
                 error=None,
@@ -190,6 +193,7 @@ class StatusService:
         if not codex_sync_state.imported:
             return CodexSyncStatus(
                 state="missing",
+                detail="projection missing; token validity is not live-verified",
                 method=codex_sync_state.method,
                 synced_at=codex_sync_state.synced_at,
                 error=codex_sync_state.error,
@@ -205,6 +209,7 @@ class StatusService:
             state = "out-of-sync"
         return CodexSyncStatus(
             state=state,
+            detail="projection only; token validity is not live-verified",
             method=codex_sync_state.method,
             synced_at=codex_sync_state.synced_at,
             error=codex_sync_state.error,

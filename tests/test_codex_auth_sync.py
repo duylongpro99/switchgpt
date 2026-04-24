@@ -83,7 +83,7 @@ def test_sync_active_slot_writes_stored_auth_json_atomically(tmp_path) -> None:
     assert written["OPENAI_API_KEY"] is None
     assert written["auth_mode"] == "chatgpt"
     assert written["tokens"]["account_id"] == "account-2"
-    assert written["last_refresh"] == "2026-04-21T10:05:00Z"
+    assert written["last_refresh"] == "2026-04-21T10:00:00Z"
     assert not auth_path.with_name("auth.json.tmp").exists()
 
 

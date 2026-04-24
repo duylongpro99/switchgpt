@@ -17,6 +17,7 @@ def render_status_summary(summary: StatusSummary) -> list[str]:
         lines.append(f"Active slot: {summary.active_account_index}")
     if summary.codex_sync is not None:
         lines.append(f"Codex sync: {summary.codex_sync.state}")
+        lines.append(f"Codex auth check: {summary.codex_sync.detail}")
         if summary.codex_sync.method is not None:
             lines.append(f"Codex sync method: {summary.codex_sync.method}")
         if summary.codex_sync.synced_at is not None:

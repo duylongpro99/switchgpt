@@ -300,6 +300,40 @@ def test_run_warns_when_last_codex_sync_does_not_match_active_slot() -> None:
     assert report.readiness == "needs-attention"
 
 
+def test_run_reports_local_projection_language_for_codex_sync_pass() -> None:
+    service = DoctorService(
+        metadata_store=type(
+            "Store",
+            (),
+            {
+                "load": lambda self: Snapshot(
+                    [Account("switchgpt_account_0")],
+                    active_account_index=0,
+                    last_codex_sync_slot=0,
+                    last_codex_sync_status="ok",
+                    last_codex_sync_method="file",
+                    last_codex_sync_at=datetime(2026, 4, 19, 9, 30, tzinfo=UTC),
+                    last_codex_sync_fingerprint="fp-live-0",
+                    codex_import_fingerprints={0: "fp-live-0"},
+                )
+            },
+        )(),
+        history_store=type("History", (), {"load": lambda self: []})(),
+        secret_store=type(
+            "Secrets", (), {"exists": lambda self, key: key == "switchgpt_account_0"}
+        )(),
+        managed_browser=FakeManagedBrowser(can_open=True),
+        platform_name="Darwin",
+    )
+
+    report = service.run()
+
+    codex_sync_check = next(check for check in report.checks if check.name == "codex-sync")
+    assert codex_sync_check.status == "pass"
+    assert "last successful local Codex auth projection" in codex_sync_check.detail
+    assert "validated" not in codex_sync_check.detail
+
+
 def test_run_warns_when_last_codex_sync_failed_for_active_slot() -> None:
     service = DoctorService(
         metadata_store=type(
