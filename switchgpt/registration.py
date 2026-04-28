@@ -18,13 +18,11 @@ class RegistrationService:
         self,
         account_store,
         secret_store,
-        browser_client,
         *,
         codex_auth_sync=None,
     ) -> None:
         self._account_store = account_store
         self._secret_store = secret_store
-        self._browser_client = browser_client
         self._codex_auth_sync = codex_auth_sync
 
     def add(self) -> AccountRecord:
@@ -41,19 +39,6 @@ class RegistrationService:
             email=email,
             secret=SessionSecret(session_token="", csrf_token=None),
             captured_at=captured_at,
-        )
-        return self._persist_add_result(
-            slot=slot,
-            key=key,
-            result=result,
-        )
-
-    def add_in_managed_workspace(self, *, page) -> AccountRecord:
-        slot = self._account_store.next_empty_slot()
-        key = f"switchgpt_account_{slot}"
-        result = self._browser_client.capture_existing_session(
-            page,
-            existing_email="unknown@example.com",
         )
         return self._persist_add_result(
             slot=slot,
@@ -94,19 +79,18 @@ class RegistrationService:
     def reauth(self, index: int) -> AccountRecord:
         existing = self._account_store.get_record(index)
         previous_secret = self._secret_store.read(existing.keychain_key)
-        result = self._browser_client.reauth(existing.email)
-        return self._persist_reauth_result(
-            existing=existing,
-            previous_secret=previous_secret,
-            result=result,
-        )
-
-    def reauth_in_managed_workspace(self, *, index: int, page) -> AccountRecord:
-        existing = self._account_store.get_record(index)
-        previous_secret = self._secret_store.read(existing.keychain_key)
-        result = self._browser_client.capture_existing_session(
-            page,
-            existing_email=existing.email,
+        captured_at = datetime.now(UTC)
+        email = existing.email
+        resolver = getattr(self._codex_auth_sync, "resolve_auth_email", None)
+        if callable(resolver):
+            resolved_email = resolver(None)
+            if type(resolved_email) is str and resolved_email:
+                email = resolved_email
+        result = RegistrationResult(
+            email=email,
+            secret=previous_secret
+            or SessionSecret(session_token="", csrf_token=None),
+            captured_at=captured_at,
         )
         return self._persist_reauth_result(
             existing=existing,

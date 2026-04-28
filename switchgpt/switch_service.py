@@ -18,14 +18,12 @@ class SwitchService:
         self,
         account_store,
         secret_store,
-        managed_browser,
         history_store,
         *,
         codex_auth_sync=None,
     ) -> None:
         self._account_store = account_store
         self._secret_store = secret_store
-        self._managed_browser = managed_browser
         self._history_store = history_store
         self._codex_auth_sync = codex_auth_sync
 

@@ -6,8 +6,6 @@ from .errors import CodexAuthSyncFailedError, SwitchGptError
 from .output import render_doctor_report, render_settings_items, render_status_summary
 from .registration import RegistrationService
 from .status_service import PersistedCodexSyncState
-from .switch_service import SwitchService
-from .watch_service import WatchService
 
 
 app = typer.Typer(no_args_is_help=True)
@@ -30,10 +28,6 @@ def build_doctor_service():
     return bootstrap.build_doctor_service()
 
 
-def build_managed_browser():
-    return bootstrap.build_managed_browser()
-
-
 def build_switch_service():
     return bootstrap.build_switch_service()
 
@@ -48,10 +42,6 @@ def build_codex_import_service():
 
 def build_remove_command_service():
     return bootstrap.build_remove_command_service()
-
-
-def build_watch_service():
-    return bootstrap.build_watch_service()
 
 
 def _persisted_codex_sync_state_from_snapshot(snapshot):
@@ -148,15 +138,10 @@ def doctor() -> None:
 @app.command()
 def add(
     reauth: int | None = typer.Option(None, "--reauth"),
-    from_open: bool = typer.Option(False, "--from-open"),
     import_codex_auth: bool = typer.Option(False, "--import-codex-auth"),
 ) -> None:
     try:
         ensure_supported_platform()
-        if from_open:
-            raise SwitchGptError(
-                "--from-open is no longer supported. Run `codex login`, then `switchgpt add`."
-            )
         service = build_registration_service()
         if reauth is None:
             record = service.add()
@@ -170,17 +155,6 @@ def add(
     except CodexAuthSyncFailedError as exc:
         typer.echo(_render_codex_sync_repair_message(str(exc)), err=True)
         raise typer.Exit(code=1) from exc
-    except SwitchGptError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1) from exc
-
-
-@app.command()
-def open() -> None:
-    try:
-        ensure_supported_platform()
-        build_managed_browser().open_workspace()
-        print("Managed ChatGPT workspace is ready.")
     except SwitchGptError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
@@ -260,37 +234,6 @@ def switch(to: int | None = typer.Option(None, "--to")) -> None:
         service = build_switch_service()
         result = service.switch_next() if to is None else service.switch_to(to)
         print(f"Switched to {result.account.email} in slot {result.account.index}.")
-    except CodexAuthSyncFailedError as exc:
-        typer.echo(_render_codex_sync_repair_message(str(exc)), err=True)
-        raise typer.Exit(code=1) from exc
-    except SwitchGptError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1) from exc
-
-
-@app.command()
-def watch() -> None:
-    try:
-        ensure_supported_platform()
-        service = build_watch_service()
-        last_notification_message: str | None = None
-
-        def print_event(event) -> None:
-            nonlocal last_notification_message
-            last_notification_message = getattr(event, "message", None)
-            print(event.message)
-
-        result = service.run(notify=print_event)
-        if (
-            result.exit_code != 0
-            and getattr(result, "reason", None) == "codex-sync-failed"
-        ):
-            typer.echo(
-                _render_codex_sync_repair_message(last_notification_message),
-                err=True,
-            )
-        if result.exit_code != 0:
-            raise typer.Exit(code=result.exit_code)
     except CodexAuthSyncFailedError as exc:
         typer.echo(_render_codex_sync_repair_message(str(exc)), err=True)
         raise typer.Exit(code=1) from exc

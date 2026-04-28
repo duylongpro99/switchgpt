@@ -1,6 +1,4 @@
 from dataclasses import dataclass
-from tempfile import TemporaryDirectory
-
 from .diagnostics import redact_text
 from .errors import AccountStoreError, SecretStoreError, SwitchHistoryError
 
@@ -25,14 +23,12 @@ class DoctorService:
         metadata_store,
         history_store,
         secret_store,
-        managed_browser,
         *,
         platform_name: str,
     ) -> None:
         self._metadata_store = metadata_store
         self._history_store = history_store
         self._secret_store = secret_store
-        self._managed_browser = managed_browser
         self._platform_name = platform_name
 
     def run(self) -> DoctorReport:
@@ -43,10 +39,9 @@ class DoctorService:
             self._check_history(),
             self._check_codex_sync(snapshot, metadata_check),
             self._check_keychain_entries(snapshot, metadata_check),
-            self._check_runtime(),
         ]
         readiness = (
-            "watch-ready"
+            "ready"
             if all(check.status == "pass" for check in checks)
             else "needs-attention"
         )
@@ -214,36 +209,5 @@ class DoctorService:
             "keychain",
             "pass",
             "Registered account secrets exist in Keychain.",
-            None,
-        )
-
-    def _check_runtime(self) -> DoctorCheck:
-        try:
-            with TemporaryDirectory(prefix="switchgpt-doctor-") as probe_dir:
-                can_open = self._managed_browser.can_open_workspace(
-                    probe_profile_dir=probe_dir,
-                    headless=True,
-                )
-        except Exception as exc:
-            detail = redact_text(str(exc))
-            if not detail:
-                detail = "Managed browser probe failed."
-            return DoctorCheck(
-                "managed-browser",
-                "fail",
-                detail,
-                "Run `switchgpt open` after repairing Playwright/browser prerequisites.",
-            )
-        if not can_open:
-            return DoctorCheck(
-                "managed-browser",
-                "fail",
-                "Managed workspace could not be opened.",
-                "Run `switchgpt open` after repairing Playwright/browser prerequisites.",
-            )
-        return DoctorCheck(
-            "managed-browser",
-            "pass",
-            "Managed workspace can be opened.",
             None,
         )

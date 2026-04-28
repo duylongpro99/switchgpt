@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from switchgpt.config import Settings, SettingsItem, ensure_supported_platform, get_env
-from switchgpt.errors import ManagedBrowserError, SwitchError, SwitchGptError, UnsupportedPlatformError
+from switchgpt.errors import SwitchError, SwitchGptError, UnsupportedPlatformError
 
 
 def test_settings_uses_switchgpt_home_under_user_home(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -20,12 +20,11 @@ def test_ensure_supported_platform_rejects_non_macos(monkeypatch: pytest.MonkeyP
         ensure_supported_platform()
 
 
-def test_settings_exposes_phase_2_runtime_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_exposes_runtime_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", "/tmp/example-home")
 
     settings = Settings.from_env()
 
-    assert settings.managed_profile_dir == Path("/tmp/example-home/.switchgpt/playwright-profile")
     assert settings.switch_history_path == Path("/tmp/example-home/.switchgpt/switch-history.jsonl")
 
 
@@ -36,7 +35,7 @@ def test_settings_support_env_overrides_and_describe_items(
     monkeypatch.setenv("SWITCHGPT_HOME", "/tmp/custom-switchgpt")
     monkeypatch.setenv("SWITCHGPT_SLOT_COUNT", "5")
     monkeypatch.setenv("SWITCHGPT_KEYCHAIN_SERVICE", "switchgpt-dev")
-    monkeypatch.setenv("SWITCHGPT_BASE_URL", "https://example.invalid")
+    monkeypatch.setenv("SWITCHGPT_CODEX_AUTH_PATH", "/tmp/codex-auth.json")
 
     settings = Settings.from_env()
     items = {item.name: item for item in settings.describe_items()}
@@ -44,7 +43,9 @@ def test_settings_support_env_overrides_and_describe_items(
     assert settings.data_dir == Path("/tmp/custom-switchgpt")
     assert settings.slot_count == 5
     assert settings.keychain_service == "switchgpt-dev"
-    assert settings.chatgpt_base_url == "https://example.invalid"
+    assert settings.codex_auth_file_path == Path("/tmp/codex-auth.json")
+    assert "chatgpt_base_url" not in items
+    assert "managed_profile_dir" not in items
     assert items["metadata_path"] == SettingsItem(
         name="metadata_path",
         value="/tmp/custom-switchgpt/accounts.json",
@@ -56,8 +57,7 @@ def test_settings_support_env_overrides_and_describe_items(
     assert items["keychain_service"].secret is True
 
 
-def test_phase_2_error_types_inherit_from_switchgpt_error() -> None:
-    assert issubclass(ManagedBrowserError, SwitchGptError)
+def test_error_types_inherit_from_switchgpt_error() -> None:
     assert issubclass(SwitchError, SwitchGptError)
 
 
@@ -66,10 +66,10 @@ def test_get_env_reads_from_dotenv_when_process_env_missing(
     tmp_path: Path,
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("SWITCHGPT_BROWSER_CHANNEL", raising=False)
-    (tmp_path / ".env").write_text("SWITCHGPT_BROWSER_CHANNEL=chrome\n", encoding="utf-8")
+    monkeypatch.delenv("SWITCHGPT_TEST_VALUE", raising=False)
+    (tmp_path / ".env").write_text("SWITCHGPT_TEST_VALUE=from-dotenv\n", encoding="utf-8")
 
-    assert get_env("SWITCHGPT_BROWSER_CHANNEL") == "chrome"
+    assert get_env("SWITCHGPT_TEST_VALUE") == "from-dotenv"
 
 
 def test_get_env_prefers_process_env_over_dotenv(
@@ -77,7 +77,7 @@ def test_get_env_prefers_process_env_over_dotenv(
     tmp_path: Path,
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("SWITCHGPT_BROWSER_CHANNEL", "msedge")
-    (tmp_path / ".env").write_text("SWITCHGPT_BROWSER_CHANNEL=chrome\n", encoding="utf-8")
+    monkeypatch.setenv("SWITCHGPT_TEST_VALUE", "from-env")
+    (tmp_path / ".env").write_text("SWITCHGPT_TEST_VALUE=from-dotenv\n", encoding="utf-8")
 
-    assert get_env("SWITCHGPT_BROWSER_CHANNEL") == "msedge"
+    assert get_env("SWITCHGPT_TEST_VALUE") == "from-env"

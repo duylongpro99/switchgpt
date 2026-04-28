@@ -108,7 +108,7 @@ class StatusService:
                 readiness = "needs-attention"
                 next_action = (
                     f"Reauthenticate slot {needs_reauth_slot} with `switchgpt add --reauth "
-                    f"{needs_reauth_slot}` or let `switchgpt watch` guide the in-session flow."
+                    f"{needs_reauth_slot} --import-codex-auth` after running `codex login`."
                 )
 
         if readiness == "ready" and codex_sync.state == "out-of-sync":

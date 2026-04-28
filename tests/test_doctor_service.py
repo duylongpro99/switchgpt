@@ -4,16 +4,6 @@ from switchgpt.doctor_service import DoctorService
 from switchgpt.errors import AccountStoreError, SecretStoreError, SwitchHistoryError
 
 
-class FakeManagedBrowser:
-    def __init__(self, can_open: bool) -> None:
-        self._can_open = can_open
-        self.calls = []
-
-    def can_open_workspace(self, **kwargs) -> bool:
-        self.calls.append(kwargs)
-        return self._can_open
-
-
 class Snapshot:
     def __init__(
         self,
@@ -45,41 +35,37 @@ class Account:
         self.keychain_key = keychain_key
 
 
-def test_run_reports_watch_readiness_when_all_checks_pass() -> None:
-    managed_browser = FakeManagedBrowser(can_open=True)
-    service = DoctorService(
-        metadata_store=type(
-            "Store",
-            (),
-            {"load": lambda self: Snapshot([Account("switchgpt_account_0")])},
-        )(),
-        history_store=type("History", (), {"load": lambda self: []})(),
-        secret_store=type(
-            "Secrets", (), {"exists": lambda self, key: key == "switchgpt_account_0"}
-        )(),
-        managed_browser=managed_browser,
-        platform_name="Darwin",
+def build_service(
+    *,
+    snapshot=None,
+    history=None,
+    secret_exists=True,
+    platform_name="Darwin",
+) -> DoctorService:
+    if snapshot is None:
+        snapshot = Snapshot([Account("switchgpt_account_0")])
+    if history is None:
+        history = []
+    return DoctorService(
+        metadata_store=type("Store", (), {"load": lambda self: snapshot})(),
+        history_store=type("History", (), {"load": lambda self: history})(),
+        secret_store=type("Secrets", (), {"exists": lambda self, key: secret_exists})(),
+        platform_name=platform_name,
     )
+
+
+def test_run_reports_ready_when_all_codex_checks_pass() -> None:
+    service = build_service()
 
     report = service.run()
 
-    assert report.readiness == "watch-ready"
+    assert report.readiness == "ready"
     assert all(check.status == "pass" for check in report.checks)
-    assert managed_browser.calls[0]["headless"] is True
+    assert "managed-browser" not in {check.name for check in report.checks}
 
 
 def test_run_reports_needs_attention_when_keychain_secret_is_missing() -> None:
-    service = DoctorService(
-        metadata_store=type(
-            "Store",
-            (),
-            {"load": lambda self: Snapshot([Account("switchgpt_account_0")])},
-        )(),
-        history_store=type("History", (), {"load": lambda self: []})(),
-        secret_store=type("Secrets", (), {"exists": lambda self, key: False})(),
-        managed_browser=FakeManagedBrowser(can_open=True),
-        platform_name="Darwin",
-    )
+    service = build_service(secret_exists=False)
 
     report = service.run()
 
@@ -98,7 +84,6 @@ def test_run_reports_metadata_failure_cleanly() -> None:
         metadata_store=BrokenStore(),
         history_store=type("History", (), {"load": lambda self: []})(),
         secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
-        managed_browser=FakeManagedBrowser(can_open=True),
         platform_name="Darwin",
     )
 
@@ -118,7 +103,6 @@ def test_run_reports_history_warning_cleanly() -> None:
             {"load": lambda self: (_ for _ in ()).throw(SwitchHistoryError("bad history"))},
         )(),
         secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
-        managed_browser=FakeManagedBrowser(can_open=True),
         platform_name="Darwin",
     )
 
@@ -130,13 +114,7 @@ def test_run_reports_history_warning_cleanly() -> None:
 
 
 def test_run_reports_platform_failure_cleanly() -> None:
-    service = DoctorService(
-        metadata_store=type("Store", (), {"load": lambda self: Snapshot([])})(),
-        history_store=type("History", (), {"load": lambda self: []})(),
-        secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
-        managed_browser=FakeManagedBrowser(can_open=True),
-        platform_name="Linux",
-    )
+    service = build_service(snapshot=Snapshot([]), platform_name="Linux")
 
     report = service.run()
 
@@ -161,13 +139,12 @@ def test_run_loads_metadata_once_for_stable_diagnosis() -> None:
         secret_store=type(
             "Secrets", (), {"exists": lambda self, key: key == "switchgpt_account_0"}
         )(),
-        managed_browser=FakeManagedBrowser(can_open=True),
         platform_name="Darwin",
     )
 
     report = service.run()
 
-    assert report.readiness == "watch-ready"
+    assert report.readiness == "ready"
     assert store.calls == 1
 
 
@@ -184,7 +161,6 @@ def test_run_reports_keychain_backend_failure_cleanly() -> None:
         )(),
         history_store=type("History", (), {"load": lambda self: []})(),
         secret_store=BrokenSecrets(),
-        managed_browser=FakeManagedBrowser(can_open=True),
         platform_name="Darwin",
     )
 
@@ -195,68 +171,8 @@ def test_run_reports_keychain_backend_failure_cleanly() -> None:
     assert report.readiness == "needs-attention"
 
 
-def test_run_reports_managed_browser_failure_cleanly() -> None:
-    service = DoctorService(
-        metadata_store=type("Store", (), {"load": lambda self: Snapshot([])})(),
-        history_store=type("History", (), {"load": lambda self: []})(),
-        secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
-        managed_browser=FakeManagedBrowser(can_open=False),
-        platform_name="Darwin",
-    )
-
-    report = service.run()
-
-    runtime_check = next(check for check in report.checks if check.name == "managed-browser")
-    assert runtime_check.status == "fail"
-    assert report.readiness == "needs-attention"
-
-
-def test_run_uses_fallback_detail_when_runtime_exception_is_empty() -> None:
-    class BrokenManagedBrowser:
-        def can_open_workspace(self, **kwargs) -> bool:
-            raise RuntimeError("")
-
-    service = DoctorService(
-        metadata_store=type("Store", (), {"load": lambda self: Snapshot([])})(),
-        history_store=type("History", (), {"load": lambda self: []})(),
-        secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
-        managed_browser=BrokenManagedBrowser(),
-        platform_name="Darwin",
-    )
-
-    report = service.run()
-
-    runtime_check = next(check for check in report.checks if check.name == "managed-browser")
-    assert runtime_check.detail == "Managed browser probe failed."
-
-
-def test_run_redacts_sensitive_runtime_failure_detail() -> None:
-    class BrokenManagedBrowser:
-        def can_open_workspace(self, **kwargs) -> bool:
-            raise RuntimeError("cookie=abc123 blocked browser startup")
-
-    service = DoctorService(
-        metadata_store=type("Store", (), {"load": lambda self: Snapshot([])})(),
-        history_store=type("History", (), {"load": lambda self: []})(),
-        secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
-        managed_browser=BrokenManagedBrowser(),
-        platform_name="Darwin",
-    )
-
-    report = service.run()
-
-    runtime_check = next(check for check in report.checks if check.name == "managed-browser")
-    assert runtime_check.detail == "cookie=[redacted] blocked browser startup"
-
-
 def test_run_includes_codex_sync_pass_when_no_active_slot() -> None:
-    service = DoctorService(
-        metadata_store=type("Store", (), {"load": lambda self: Snapshot([])})(),
-        history_store=type("History", (), {"load": lambda self: []})(),
-        secret_store=type("Secrets", (), {"exists": lambda self, key: True})(),
-        managed_browser=FakeManagedBrowser(can_open=True),
-        platform_name="Darwin",
-    )
+    service = build_service(snapshot=Snapshot([]))
 
     report = service.run()
 
@@ -266,29 +182,17 @@ def test_run_includes_codex_sync_pass_when_no_active_slot() -> None:
 
 
 def test_run_warns_when_last_codex_sync_does_not_match_active_slot() -> None:
-    service = DoctorService(
-        metadata_store=type(
-            "Store",
-            (),
-            {
-                "load": lambda self: Snapshot(
-                    [Account("switchgpt_account_0")],
-                    active_account_index=0,
-                    last_codex_sync_slot=1,
-                    last_codex_sync_status="ok",
-                    last_codex_sync_method="file",
-                    last_codex_sync_at=datetime(2026, 4, 19, 9, 30, tzinfo=UTC),
-                    last_codex_sync_fingerprint="fp-live-1",
-                    codex_import_fingerprints={0: "fp-imported-0"},
-                )
-            },
-        )(),
-        history_store=type("History", (), {"load": lambda self: []})(),
-        secret_store=type(
-            "Secrets", (), {"exists": lambda self, key: key == "switchgpt_account_0"}
-        )(),
-        managed_browser=FakeManagedBrowser(can_open=True),
-        platform_name="Darwin",
+    service = build_service(
+        snapshot=Snapshot(
+            [Account("switchgpt_account_0")],
+            active_account_index=0,
+            last_codex_sync_slot=1,
+            last_codex_sync_status="ok",
+            last_codex_sync_method="file",
+            last_codex_sync_at=datetime(2026, 4, 19, 9, 30, tzinfo=UTC),
+            last_codex_sync_fingerprint="fp-live-1",
+            codex_import_fingerprints={0: "fp-imported-0"},
+        )
     )
 
     report = service.run()
@@ -301,29 +205,17 @@ def test_run_warns_when_last_codex_sync_does_not_match_active_slot() -> None:
 
 
 def test_run_reports_local_projection_language_for_codex_sync_pass() -> None:
-    service = DoctorService(
-        metadata_store=type(
-            "Store",
-            (),
-            {
-                "load": lambda self: Snapshot(
-                    [Account("switchgpt_account_0")],
-                    active_account_index=0,
-                    last_codex_sync_slot=0,
-                    last_codex_sync_status="ok",
-                    last_codex_sync_method="file",
-                    last_codex_sync_at=datetime(2026, 4, 19, 9, 30, tzinfo=UTC),
-                    last_codex_sync_fingerprint="fp-live-0",
-                    codex_import_fingerprints={0: "fp-live-0"},
-                )
-            },
-        )(),
-        history_store=type("History", (), {"load": lambda self: []})(),
-        secret_store=type(
-            "Secrets", (), {"exists": lambda self, key: key == "switchgpt_account_0"}
-        )(),
-        managed_browser=FakeManagedBrowser(can_open=True),
-        platform_name="Darwin",
+    service = build_service(
+        snapshot=Snapshot(
+            [Account("switchgpt_account_0")],
+            active_account_index=0,
+            last_codex_sync_slot=0,
+            last_codex_sync_status="ok",
+            last_codex_sync_method="file",
+            last_codex_sync_at=datetime(2026, 4, 19, 9, 30, tzinfo=UTC),
+            last_codex_sync_fingerprint="fp-live-0",
+            codex_import_fingerprints={0: "fp-live-0"},
+        )
     )
 
     report = service.run()
@@ -335,29 +227,17 @@ def test_run_reports_local_projection_language_for_codex_sync_pass() -> None:
 
 
 def test_run_warns_when_last_codex_sync_failed_for_active_slot() -> None:
-    service = DoctorService(
-        metadata_store=type(
-            "Store",
-            (),
-            {
-                "load": lambda self: Snapshot(
-                    [Account("switchgpt_account_0")],
-                    active_account_index=0,
-                    last_codex_sync_slot=0,
-                    last_codex_sync_status="failed",
-                    last_codex_sync_method="env-fallback",
-                    last_codex_sync_at=datetime(2026, 4, 19, 9, 45, tzinfo=UTC),
-                    last_codex_sync_error="codex-auth-write-failed",
-                    codex_import_fingerprints={0: "fp-imported-0"},
-                )
-            },
-        )(),
-        history_store=type("History", (), {"load": lambda self: []})(),
-        secret_store=type(
-            "Secrets", (), {"exists": lambda self, key: key == "switchgpt_account_0"}
-        )(),
-        managed_browser=FakeManagedBrowser(can_open=True),
-        platform_name="Darwin",
+    service = build_service(
+        snapshot=Snapshot(
+            [Account("switchgpt_account_0")],
+            active_account_index=0,
+            last_codex_sync_slot=0,
+            last_codex_sync_status="failed",
+            last_codex_sync_method="file",
+            last_codex_sync_at=datetime(2026, 4, 19, 9, 45, tzinfo=UTC),
+            last_codex_sync_error="codex-auth-write-failed",
+            codex_import_fingerprints={0: "fp-imported-0"},
+        )
     )
 
     report = service.run()
@@ -369,31 +249,18 @@ def test_run_warns_when_last_codex_sync_failed_for_active_slot() -> None:
 
 
 def test_run_warns_when_last_codex_sync_failed_for_different_slot_than_active() -> None:
-    service = DoctorService(
-        metadata_store=type(
-            "Store",
-            (),
-            {
-                "load": lambda self: Snapshot(
-                    [Account("switchgpt_account_0"), Account("switchgpt_account_1")],
-                    active_account_index=0,
-                    last_codex_sync_slot=1,
-                    last_codex_sync_status="failed",
-                    last_codex_sync_method="env-fallback",
-                    last_codex_sync_at=datetime(2026, 4, 19, 9, 45, tzinfo=UTC),
-                    last_codex_sync_error="codex-auth-write-failed",
-                    codex_import_fingerprints={0: "fp-imported-0"},
-                )
-            },
-        )(),
-        history_store=type("History", (), {"load": lambda self: []})(),
-        secret_store=type(
-            "Secrets",
-            (),
-            {"exists": lambda self, key: key in {"switchgpt_account_0", "switchgpt_account_1"}},
-        )(),
-        managed_browser=FakeManagedBrowser(can_open=True),
-        platform_name="Darwin",
+    service = build_service(
+        snapshot=Snapshot(
+            [Account("switchgpt_account_0"), Account("switchgpt_account_1")],
+            active_account_index=0,
+            last_codex_sync_slot=1,
+            last_codex_sync_status="failed",
+            last_codex_sync_method="file",
+            last_codex_sync_at=datetime(2026, 4, 19, 9, 45, tzinfo=UTC),
+            last_codex_sync_error="codex-auth-write-failed",
+            codex_import_fingerprints={0: "fp-imported-0"},
+        ),
+        secret_exists=True,
     )
 
     report = service.run()

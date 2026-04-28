@@ -19,27 +19,19 @@
                              │     │     │
                ┌─────────────┘     │     └─────────────┐
                │                   │                   │
-    ┌──────────▼──────────┐ ┌──────▼───────┐ ┌────────▼────────┐
-    │   Session Manager   │ │ Account Store│ │  Limit Detector │
-    │ cookie/token inject │ │  encrypted   │ │  rate · quota   │
-    │                     │ │  keychain    │ │  watcher        │
-    └──────────┬──────────┘ └──────┬───────┘ └────────┬────────┘
-               │                   │    ╔══════════════╝
-               │                   │    ║  auto-switch trigger
-               │            ┌──────▼────╨──────────┐
+    ┌──────────▼──────────┐ ┌──────▼───────┐
+    │ Codex Auth Projector│ │ Account Store│
+    │ auth.json sync      │ │ keychain refs│
+    └──────────┬──────────┘ └──────┬───────┘
+               │                   │
+               │            ┌──────▼───────────────┐
                │            │   Persistence Layer   │
                │            │ accounts.json · OS    │
                │            │ keychain              │
                │            └───────────────────────┘
                │
     ┌──────────▼──────────────────────────┐
-    │      Browser Automation Layer       │
-    │      Playwright · headless          │
-    │      Chromium                       │
-    └──────────┬──────────────────────────┘
-               │
-    ┌──────────▼──────────────────────────┐
-    │    ChatGPT / Codex (browser)        │
+    │      Codex CLI auth.json            │
     └─────────────────────────────────────┘
 
 
@@ -55,9 +47,7 @@
 |---|---|
 | **CLI core** | Entry point — parses subcommands, loads config, orchestrates modules |
 | **Account store** | Manages 3 account profiles; credentials referenced via OS keychain |
-| **Session manager** | Injects correct browser cookies/tokens for the target account |
-| **Limit detector** | Watches for quota signals (HTTP 429, DOM text, API headers) |
-| **Browser automation** | Performs the actual session swap via Playwright + headless Chromium |
+| **Codex auth projector** | Writes stored slot auth into the live Codex CLI auth file |
 | **Persistence layer** | Stores account ordering, last-used timestamps, and switch history |
 
 ---
@@ -81,45 +71,31 @@ When one of your 3 ChatGPT Plus accounts hits its Codex usage limit, you are for
 
 | Command | Description |
 |---|---|
-| `switchgpt add` | One-time login flow for a new account — opens visible Chromium, user logs in manually (incl. OTP), session token captured and stored in OS keychain |
-| `switchgpt add --reauth 1` | Re-run the one-time login for an existing account slot (e.g. when token expires after ~30 days) |
+| `switchgpt add` | Register the current Codex CLI account after manual `codex login` |
+| `switchgpt add --reauth 1` | Refresh metadata for an existing account slot after manual `codex login` |
 | `switchgpt import-codex-auth --slot 1` | Import the currently active Codex CLI `auth.json` into slot 1 after manual `codex login` |
 | `switchgpt codex-sync` | Project the active slot's previously imported Codex `auth.json` back to the live Codex auth path |
-| `switchgpt switch` | Manually switch to the next account in rotation (cookie inject only, no login) |
+| `switchgpt switch` | Manually switch to the next account in rotation by projecting stored Codex auth |
 | `switchgpt switch --to 2` | Switch to a specific account by index |
 | `switchgpt status` | Show all accounts, which is active, token expiry estimate, and limit reset times |
-| `switchgpt watch` | Background daemon mode — monitors for limit hits and auto-switches |
 | `switchgpt remove <index>` | Remove an account and its keychain entry from the store |
 
 ---
 
 ### Authentication & credential persistence
 
-ChatGPT uses a `__Secure-next-auth.session-token` cookie (~30 day TTL) that authenticates the full browser session. SwitchGPT stores that browser session in the OS keychain for ChatGPT switching, and separately stores imported Codex CLI `auth.json` payloads per slot for Codex projection.
+SwitchGPT stores imported Codex CLI `auth.json` payloads per slot in the OS keychain, then projects the selected slot back to the live Codex auth file during `switch` or `codex-sync`.
 
 #### First-time login (`switchgpt add`) — runs once per account
 
 ```
-switchgpt add
+codex login
     │
-    ├─ open visible Chromium window
-    ├─ user completes login manually
-    │     └─ email + password + OTP (if prompted)
-    ├─ tool detects successful login (URL or DOM signal)
-    ├─ Playwright extracts session token from browser cookie jar
-    │     ├─ __Secure-next-auth.session-token   (primary)
-    │     └─ __Host-next-auth.csrf-token        (secondary)
-    ├─ tokens encrypted and stored → OS keychain
-    └─ browser closes
-
-Done. Never repeated for this account unless token expires.
-```
-
-OTP handling during `switchgpt add` uses the manual completion approach: Playwright pauses and prints a prompt in the terminal. The user completes the full login (including OTP) in the visible browser window, then presses Enter in the terminal. Playwright then captures the resulting session cookie. This requires zero OTP detection logic and works regardless of whether ChatGPT uses email OTP, SMS, or an authenticator app.
-
-```
-[switchgpt] Complete login in the browser window (email, password, OTP if asked).
-[switchgpt] Press ENTER here when you are done: _
+    ├─ user authenticates through Codex CLI
+    ├─ Codex writes live ~/.codex/auth.json
+    ├─ switchgpt add
+    ├─ tool imports the live auth.json into the new slot
+    └─ non-secret fingerprint metadata stored → accounts.json
 ```
 
 #### Codex auth import — manual, slot-scoped
@@ -207,10 +183,8 @@ On trigger, the tool:
 | Layer | Choice | Reason |
 |---|---|---|
 | Language | Python 3.10+ | Clean async support, mature ecosystem |
-| Browser automation | Playwright | Better cookie API than Puppeteer, official Python bindings |
 | Credential storage | `keyring` | OS-native keychain (Keychain / libsecret / Credential Manager) |
 | Config | `~/.switchgpt/accounts.json` | Human-readable, gitignore-able |
-| Daemon/watch mode | Polling loop (5 s interval) | Avoids OS service complexity in v1 |
 | CLI framework | `click` or `typer` | Ergonomic arg parsing with minimal boilerplate |
 
 ---
@@ -223,8 +197,8 @@ switchgpt/
 │   ├── __init__.py
 │   ├── cli.py           # Entry point — click/typer commands
 │   ├── account_store.py # Load/save accounts.json + keychain ops
-│   ├── session.py       # Cookie capture & injection via Playwright
-│   ├── detector.py      # Limit detection logic (DOM + HTTP)
+│   ├── codex_auth_sync.py # Codex auth import and projection
+│   ├── switch_service.py  # Slot switching
 │   └── config.py        # Paths, constants, defaults
 ├── tests/
 ├── pyproject.toml
@@ -293,11 +267,10 @@ Accounts are selected using **least-recently-used + skip-if-limited** logic:
 
 ### Build order (recommended)
 
-1. `switchgpt add` — one-time login + OTP (manual completion) + token capture and keychain storage
-2. `switchgpt switch` — silent cookie inject from keychain, no login (immediate value)
+1. `switchgpt add` — slot creation and current Codex auth import
+2. `switchgpt switch` — project stored Codex auth into the live auth file
 3. `switchgpt status` — account states, token age, limit reset times
-4. `switchgpt watch` — fully automated daemon mode
-5. `switchgpt add --reauth` — token refresh when expiry is detected
+4. `switchgpt add --reauth` — refresh slot metadata after manual Codex login
 
 ---
 

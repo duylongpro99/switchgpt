@@ -27,7 +27,7 @@ def test_paths_command_prints_config_runtime_and_secret_boundaries(
     assert "data_dir:" in result.stdout
     assert "[runtime-state]" in result.stdout
     assert "keychain_service: switchgpt [secret-store]" in result.stdout
-    assert "chatgpt_base_url: https://chatgpt.com [config]" in result.stdout
+    assert "chatgpt_base_url:" not in result.stdout
 
 
 def test_build_runtime_container_reuses_single_settings_snapshot(monkeypatch) -> None:
@@ -37,9 +37,8 @@ def test_build_runtime_container_reuses_single_settings_snapshot(monkeypatch) ->
         metadata_path = "meta"
         slot_count = 3
         keychain_service = "switchgpt"
-        chatgpt_base_url = "https://chatgpt.com"
-        managed_profile_dir = "profile"
         switch_history_path = "history"
+        codex_auth_file_path = "auth.json"
 
         def describe_items(self):
             return []
@@ -55,10 +54,20 @@ def test_build_runtime_container_reuses_single_settings_snapshot(monkeypatch) ->
     runtime = build_runtime()
 
     assert captured["calls"] == 1
-    assert runtime.settings.chatgpt_base_url == "https://chatgpt.com"
+    assert not hasattr(runtime, "managed_browser")
 
 
-def test_build_registration_service_passes_managed_profile_dir_to_browser_client(monkeypatch) -> None:
+def test_browser_commands_are_not_registered() -> None:
+    open_result = runner.invoke(app, ["open"])
+    watch_result = runner.invoke(app, ["watch"])
+
+    assert open_result.exit_code != 0
+    assert watch_result.exit_code != 0
+    assert "No such command" in open_result.stderr
+    assert "No such command" in watch_result.stderr
+
+
+def test_build_registration_service_passes_codex_sync_service(monkeypatch) -> None:
     captured: dict[str, object] = {}
     runtime = type(
         "Runtime",
@@ -67,41 +76,26 @@ def test_build_registration_service_passes_managed_profile_dir_to_browser_client
             "settings": type(
                 "Settings",
                 (),
-                {
-                    "chatgpt_base_url": "https://chatgpt.com",
-                    "managed_profile_dir": "profile-dir",
-                    "codex_auth_file_path": "auth.json",
-                },
+                {"codex_auth_file_path": "auth.json"},
             )(),
             "account_store": object(),
             "secret_store": object(),
         },
     )()
 
-    class FakeBrowserRegistrationClient:
-        def __init__(self, *, base_url, profile_dir, codex_auth_file_path):
-            captured["base_url"] = base_url
-            captured["profile_dir"] = profile_dir
-            captured["codex_auth_file_path"] = codex_auth_file_path
-
     class FakeRegistrationService:
         def __init__(
             self,
             account_store,
             secret_store,
-            browser_client,
             *,
             codex_auth_sync=None,
         ) -> None:
-            captured["service_args"] = (account_store, secret_store, browser_client)
+            captured["service_args"] = (account_store, secret_store)
             captured["codex_auth_sync"] = codex_auth_sync
 
     sentinel_sync = object()
 
-    monkeypatch.setattr(
-        "switchgpt.bootstrap.BrowserRegistrationClient",
-        FakeBrowserRegistrationClient,
-    )
     monkeypatch.setattr(
         "switchgpt.bootstrap.RegistrationService",
         FakeRegistrationService,
@@ -115,9 +109,6 @@ def test_build_registration_service_passes_managed_profile_dir_to_browser_client
 
     build_registration_service(runtime=runtime)
 
-    assert captured["base_url"] == "https://chatgpt.com"
-    assert captured["profile_dir"] == "profile-dir"
-    assert captured["codex_auth_file_path"] == "auth.json"
     assert captured["service_args"][0] is runtime.account_store
     assert captured["service_args"][1] is runtime.secret_store
     assert captured["codex_auth_sync"] is sentinel_sync
@@ -854,19 +845,6 @@ def test_add_command_exits_non_zero_on_strict_codex_sync_failure_with_repair_hin
     assert "Traceback" not in result.stderr
 
 
-def test_add_command_rejects_from_open(monkeypatch) -> None:
-    class FakeRegistrationService:
-        def add(self):
-            raise AssertionError("add should not run when --from-open is rejected")
-
-    monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
-
-    result = runner.invoke(app, ["add", "--from-open"])
-
-    assert result.exit_code == 1
-    assert "--from-open is no longer supported" in result.stderr
-
-
 def test_add_command_imports_codex_auth_for_new_slot(monkeypatch) -> None:
     events: list[object] = []
 
@@ -903,19 +881,6 @@ def test_add_command_imports_codex_auth_for_new_slot(monkeypatch) -> None:
     assert "Imported Codex auth for slot 1." in result.stdout
     assert "Codex auth fingerprint stored." in result.stdout
     assert events == ["add", ("import", 1)]
-
-
-def test_add_command_from_open_with_import_flag_still_rejects_from_open(monkeypatch) -> None:
-    class FakeRegistrationService:
-        def add(self):
-            raise AssertionError("add should not run when --from-open is rejected")
-
-    monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
-
-    result = runner.invoke(app, ["add", "--from-open", "--import-codex-auth"])
-
-    assert result.exit_code == 1
-    assert "--from-open is no longer supported" in result.stderr
 
 
 def test_add_command_reports_codex_import_failure_after_registration(monkeypatch) -> None:
@@ -981,19 +946,6 @@ def test_reauth_command_imports_codex_auth_for_existing_slot(monkeypatch) -> Non
     assert events == [("reauth", 0), ("import", 0)]
 
 
-def test_add_command_rejects_from_open_with_reauth(monkeypatch) -> None:
-    class FakeRegistrationService:
-        def add(self):
-            raise AssertionError("should not be called")
-
-    monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
-
-    result = runner.invoke(app, ["add", "--from-open", "--reauth", "0"])
-
-    assert result.exit_code == 1
-    assert "--from-open is no longer supported" in result.stderr
-
-
 def test_reauth_command_requires_slot_index(monkeypatch) -> None:
     class FakeRegistrationService:
         def reauth(self, index: int):
@@ -1030,13 +982,9 @@ def test_add_command_reports_missing_reauth_slot_cleanly(monkeypatch, tmp_path) 
         def replace(self, key, secret) -> None:
             raise AssertionError("should not be called")
 
-    class FakeBrowserClient:
-        def reauth(self, existing_email: str):
-            raise AssertionError("should not be called")
-
     monkeypatch.setattr(
         "switchgpt.cli.build_registration_service",
-        lambda: RegistrationService(store, FakeSecretStore(), FakeBrowserClient()),
+        lambda: RegistrationService(store, FakeSecretStore()),
     )
 
     result = runner.invoke(app, ["add", "--reauth", "99"])
@@ -1069,13 +1017,9 @@ def test_add_command_reports_slot_exhaustion_cleanly(monkeypatch, tmp_path) -> N
         def write(self, key, secret) -> None:
             raise AssertionError("should not be called")
 
-    class FakeBrowserClient:
-        def register(self):
-            raise AssertionError("should not be called")
-
     monkeypatch.setattr(
         "switchgpt.cli.build_registration_service",
-        lambda: RegistrationService(store, FakeSecretStore(), FakeBrowserClient()),
+        lambda: RegistrationService(store, FakeSecretStore()),
     )
 
     result = runner.invoke(app, ["add"])
@@ -1313,19 +1257,6 @@ def test_switch_command_surfaces_switch_error_cleanly(monkeypatch) -> None:
     assert "Traceback" not in result.stderr
 
 
-def test_open_command_reports_managed_workspace_ready(monkeypatch) -> None:
-    class FakeManagedBrowser:
-        def open_workspace(self):
-            return None
-
-    monkeypatch.setattr("switchgpt.cli.build_managed_browser", lambda: FakeManagedBrowser())
-
-    result = runner.invoke(app, ["open"])
-
-    assert result.exit_code == 0
-    assert "Managed ChatGPT workspace is ready." in result.stdout
-
-
 def test_doctor_command_prints_check_results(monkeypatch) -> None:
     monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
 
@@ -1335,7 +1266,7 @@ def test_doctor_command_prints_check_results(monkeypatch) -> None:
                 "Report",
                 (),
                 {
-                    "readiness": "watch-ready",
+                    "readiness": "ready",
                     "checks": [
                         type(
                             "Check",
@@ -1356,7 +1287,7 @@ def test_doctor_command_prints_check_results(monkeypatch) -> None:
     result = runner.invoke(app, ["doctor"])
 
     assert result.exit_code == 0
-    assert "Readiness: watch-ready" in result.stdout
+    assert "Readiness: ready" in result.stdout
     assert "platform: pass - macOS detected." in result.stdout
 
 
@@ -1393,222 +1324,3 @@ def test_doctor_command_reports_platform_failure_from_service(monkeypatch) -> No
     assert "Readiness: needs-attention" in result.stdout
     assert "platform: fail - switchgpt requires macOS." in result.stdout
 
-
-def test_watch_command_prints_notifications_and_exits_zero_for_short_run(monkeypatch) -> None:
-    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
-
-    class FakeWatchService:
-        def run(self, *, notify, sleep_fn=None, stop_after_cycles=None):
-            notify(
-                type(
-                    "Event",
-                    (),
-                    {"message": "Watching the managed ChatGPT workspace for usage limits."},
-                )()
-            )
-            notify(
-                type(
-                    "Event",
-                    (),
-                    {"message": "Usage limit detected. Switching immediately."},
-                )()
-            )
-            notify(type("Event", (), {"message": "Switched to slot 1."})())
-            return type("Result", (), {"exit_code": 0})()
-
-    monkeypatch.setattr("switchgpt.cli.build_watch_service", lambda: FakeWatchService())
-
-    result = runner.invoke(app, ["watch"])
-
-    assert result.exit_code == 0
-    assert "Watching the managed ChatGPT workspace for usage limits." in result.stdout
-    assert "Switched to slot 1." in result.stdout
-
-
-def test_build_watch_service_wires_registration_service(monkeypatch) -> None:
-    store = object()
-    secret_store = object()
-    managed_browser = object()
-    history_store = object()
-    runtime = type(
-        "Runtime",
-        (),
-        {
-            "account_store": store,
-            "secret_store": secret_store,
-            "managed_browser": managed_browser,
-            "history_store": history_store,
-        },
-    )()
-    registration_service = object()
-    codex_auth_sync = object()
-    captured = {}
-
-    monkeypatch.setattr(
-        "switchgpt.bootstrap.build_runtime",
-        lambda: runtime,
-    )
-    def fake_build_registration_service(runtime_arg=None):
-        captured["registration_runtime"] = runtime_arg
-        return registration_service
-
-    monkeypatch.setattr(
-        "switchgpt.bootstrap.build_registration_service",
-        fake_build_registration_service,
-    )
-
-    monkeypatch.setattr(
-        "switchgpt.bootstrap.build_codex_auth_sync_service",
-        lambda runtime_arg=None: codex_auth_sync if runtime_arg is runtime else None,
-    )
-
-    class FakeSwitchService:
-        def __init__(
-            self,
-            account_store,
-            secret_store_arg,
-            managed_browser_arg,
-            history_store_arg,
-            *,
-            codex_auth_sync=None,
-        ):
-            captured["switch_args"] = (
-                account_store,
-                secret_store_arg,
-                managed_browser_arg,
-                history_store_arg,
-            )
-            captured["switch_codex_auth_sync"] = codex_auth_sync
-
-    class FakeWatchService:
-        def __init__(
-            self,
-            *,
-            account_store,
-            managed_browser,
-            switch_service,
-            registration_service,
-            history_store,
-        ) -> None:
-            captured["watch_args"] = {
-                "account_store": account_store,
-                "managed_browser": managed_browser,
-                "switch_service": switch_service,
-                "registration_service": registration_service,
-                "history_store": history_store,
-            }
-
-    monkeypatch.setattr("switchgpt.bootstrap.SwitchService", FakeSwitchService)
-    monkeypatch.setattr("switchgpt.bootstrap.WatchService", FakeWatchService)
-
-    from switchgpt.bootstrap import build_watch_service
-
-    build_watch_service()
-
-    assert captured["switch_args"] == (
-        store,
-        secret_store,
-        managed_browser,
-        history_store,
-    )
-    assert captured["switch_codex_auth_sync"] is codex_auth_sync
-    assert captured["registration_runtime"] is runtime
-    assert captured["watch_args"]["account_store"] is store
-    assert captured["watch_args"]["managed_browser"] is managed_browser
-    assert captured["watch_args"]["registration_service"] is registration_service
-    assert captured["watch_args"]["history_store"] is history_store
-
-
-def test_watch_command_exits_non_zero_on_exhaustion(monkeypatch) -> None:
-    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
-
-    class FakeWatchService:
-        def run(self, *, notify, sleep_fn=None, stop_after_cycles=None):
-            notify(
-                type(
-                    "Event",
-                    (),
-                    {
-                        "message": "No eligible registered account remains for automatic switching."
-                    },
-                )()
-            )
-            return type("Result", (), {"exit_code": 1})()
-
-    monkeypatch.setattr("switchgpt.cli.build_watch_service", lambda: FakeWatchService())
-
-    result = runner.invoke(app, ["watch"])
-
-    assert result.exit_code == 1
-    assert "No eligible registered account remains for automatic switching." in result.stdout
-
-
-def test_watch_command_exits_non_zero_on_codex_sync_failure_with_repair_guidance(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
-
-    class FakeWatchService:
-        def run(self, *, notify, sleep_fn=None, stop_after_cycles=None):
-            notify(
-                type(
-                    "Event",
-                    (),
-                    {"message": "Codex auth sync failed after switch."},
-                )()
-            )
-            return type(
-                "Result",
-                (),
-                {"exit_code": 1, "reason": "codex-sync-failed"},
-            )()
-
-    monkeypatch.setattr("switchgpt.cli.build_watch_service", lambda: FakeWatchService())
-
-    result = runner.invoke(app, ["watch"])
-
-    assert result.exit_code == 1
-    assert "Codex auth sync failed after switch." in result.stdout
-    assert "switchgpt codex-sync" in (result.stdout + result.stderr)
-
-
-def test_watch_command_prints_reauth_and_resume_messages(monkeypatch) -> None:
-    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
-
-    class FakeWatchService:
-        def run(self, *, notify, sleep_fn=None, stop_after_cycles=None):
-            notify(type("Event", (), {"message": "Slot 1 requires reauthentication in the managed browser."})())
-            notify(type("Event", (), {"message": "Reauthenticated slot 1; resuming watch."})())
-            return type("Result", (), {"exit_code": 0})()
-
-    monkeypatch.setattr("switchgpt.cli.build_watch_service", lambda: FakeWatchService())
-
-    result = runner.invoke(app, ["watch"])
-
-    assert result.exit_code == 0
-    assert "Slot 1 requires reauthentication in the managed browser." in result.stdout
-    assert "Reauthenticated slot 1; resuming watch." in result.stdout
-
-
-def test_watch_command_prints_runtime_failure_message_before_exit(monkeypatch) -> None:
-    monkeypatch.setattr("switchgpt.config.platform.system", lambda: "Darwin")
-
-    class FakeWatchService:
-        def run(self, *, notify, sleep_fn=None, stop_after_cycles=None):
-            notify(
-                type(
-                    "Event",
-                    (),
-                    {
-                        "message": "Managed ChatGPT workspace became unavailable during watch."
-                    },
-                )()
-            )
-            return type("Result", (), {"exit_code": 1})()
-
-    monkeypatch.setattr("switchgpt.cli.build_watch_service", lambda: FakeWatchService())
-
-    result = runner.invoke(app, ["watch"])
-
-    assert result.exit_code == 1
-    assert "Managed ChatGPT workspace became unavailable during watch." in result.stdout

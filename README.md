@@ -6,11 +6,10 @@ This repository is intended for local, repository-driven development. See [docs/
 
 ## Local Setup
 
-Install the development environment and browser runtime:
+Install the development environment:
 
 ```bash
 uv sync --dev
-uv run playwright install chromium
 ```
 
 ## Local Commands
@@ -23,17 +22,15 @@ uv run playwright install chromium
 - `uv run switchgpt import-codex-auth --slot <slot>`
 - `uv run switchgpt codex-sync`
 - `uv run switchgpt switch`
-- `uv run switchgpt watch`
 
 Use `paths` to inspect the repository-owned runtime locations.
-Use `doctor` to check local readiness before running browser-dependent flows.
+Use `doctor` to check local readiness.
 Use `status` to inspect registered account slots.
 Use `add` after `codex login` to register a new slot and immediately attach the current live Codex CLI `auth.json` to that slot.
 Use `add --reauth <slot>` to reauthenticate an existing slot.
 Use `import-codex-auth --slot <slot>` after running `codex login` with the target account to store that slot's raw Codex `auth.json` in the secret store.
 Use `codex-sync` to project the active slot's previously imported Codex `auth.json` back to the live Codex auth path.
 Use `switch` to rotate to another account slot.
-Use `watch` to run the foreground monitoring loop.
 
 ## Codex Auth Flow
 

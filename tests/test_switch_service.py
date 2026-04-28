@@ -59,28 +59,6 @@ class FakeSecretStore:
         return self._secret
 
 
-class FakeManagedBrowser:
-    def __init__(self, authenticated=True) -> None:
-        self.authenticated = authenticated
-        self.prepared = []
-
-    def ensure_runtime(self):
-        return "context", "page"
-
-    def prepare_switch(
-        self,
-        context,
-        page,
-        *,
-        session_token: str,
-        csrf_token: str | None,
-    ) -> None:
-        self.prepared.append((session_token, csrf_token))
-
-    def is_authenticated(self, page) -> bool:
-        return self.authenticated
-
-
 class FakeHistoryStore:
     def __init__(self) -> None:
         self.events = []
@@ -112,7 +90,6 @@ def test_switch_to_explicit_account_updates_active_state_and_history() -> None:
         secret_store=FakeSecretStore(
             SessionSecret(session_token="session-2", csrf_token="csrf-2")
         ),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=FakeHistoryStore(),
     )
 
@@ -154,7 +131,6 @@ def test_switch_to_runs_codex_sync_after_runtime_state_save() -> None:
         secret_store=FakeSecretStore(
             SessionSecret(session_token="session-2", csrf_token="csrf-2")
         ),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=FakeHistoryStore(),
         codex_auth_sync=FakeSyncService(),
     )
@@ -192,7 +168,6 @@ def test_switch_to_raises_strict_codex_sync_failure_with_repair_guidance() -> No
         secret_store=FakeSecretStore(
             SessionSecret(session_token="session-2", csrf_token="csrf-2")
         ),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=FakeHistoryStore(),
         codex_auth_sync=FakeSyncService(),
     )
@@ -230,7 +205,6 @@ def test_switch_to_missing_imported_codex_auth_raises_repair_guidance() -> None:
         secret_store=FakeSecretStore(
             SessionSecret(session_token="", csrf_token=None, codex_auth_json=None)
         ),
-        managed_browser=object(),
         history_store=FakeHistoryStore(),
         codex_auth_sync=FakeSyncService(),
     )
@@ -244,17 +218,7 @@ def test_switch_to_missing_imported_codex_auth_raises_repair_guidance() -> None:
     assert service._history_store.events[-1].result == "failure"
 
 
-def test_switch_to_does_not_touch_managed_browser_for_codex_only_switch() -> None:
-    class StrictManagedBrowser:
-        def ensure_runtime(self):
-            raise AssertionError("managed browser should not be used")
-
-        def prepare_switch(self, *args, **kwargs):
-            raise AssertionError("managed browser should not be used")
-
-        def is_authenticated(self, *args, **kwargs):
-            raise AssertionError("managed browser should not be used")
-
+def test_switch_to_projects_codex_auth_without_browser_dependencies() -> None:
     class FakeSyncService:
         def sync_active_slot(self, **kwargs):
             return type(
@@ -287,7 +251,6 @@ def test_switch_to_does_not_touch_managed_browser_for_codex_only_switch() -> Non
                 },
             )
         ),
-        managed_browser=StrictManagedBrowser(),
         history_store=FakeHistoryStore(),
         codex_auth_sync=FakeSyncService(),
     )
@@ -308,7 +271,6 @@ def test_switch_to_records_watch_auto_mode_for_automation_success() -> None:
         secret_store=FakeSecretStore(
             SessionSecret(session_token="session-2", csrf_token="csrf-2")
         ),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=FakeHistoryStore(),
     )
 
@@ -328,7 +290,6 @@ def test_switch_next_uses_first_registered_account_not_current() -> None:
         secret_store=FakeSecretStore(
             SessionSecret(session_token="session-2", csrf_token=None)
         ),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=FakeHistoryStore(),
     )
 
@@ -347,7 +308,6 @@ def test_switch_next_records_watch_auto_mode_for_automation_success() -> None:
         secret_store=FakeSecretStore(
             SessionSecret(session_token="session-2", csrf_token=None)
         ),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=FakeHistoryStore(),
     )
 
@@ -365,7 +325,6 @@ def test_missing_secret_records_bounded_missing_secret_result() -> None:
             active_account_index=0,
         ),
         secret_store=FakeSecretStore(None),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=FakeHistoryStore(),
     )
 
@@ -382,7 +341,6 @@ def test_missing_secret_records_failure_history_before_raising() -> None:
             active_account_index=0,
         ),
         secret_store=FakeSecretStore(None),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=FakeHistoryStore(),
     )
 
@@ -404,7 +362,6 @@ def test_runtime_state_persistence_failure_records_failure_history() -> None:
         secret_store=FakeSecretStore(
             SessionSecret(session_token="session-2", csrf_token=None)
         ),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=FakeHistoryStore(),
     )
 
@@ -424,7 +381,6 @@ def test_explicit_target_lookup_failure_records_failure_history() -> None:
             get_record_error=SwitchError("Account slot 1 is not registered."),
         ),
         secret_store=FakeSecretStore(None),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=FakeHistoryStore(),
     )
 
@@ -444,7 +400,6 @@ def test_explicit_switch_metadata_load_failure_records_failure_history() -> None
             load_error=RuntimeError("metadata load failed"),
         ),
         secret_store=FakeSecretStore(None),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=FakeHistoryStore(),
     )
 
@@ -464,7 +419,6 @@ def test_auto_target_metadata_load_failure_records_failure_history_without_targe
             load_error=RuntimeError("metadata load failed"),
         ),
         secret_store=FakeSecretStore(None),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=FakeHistoryStore(),
     )
 
@@ -493,7 +447,6 @@ def test_failure_history_message_is_redacted_before_persistence() -> None:
         secret_store=FakeSecretStore(
             SessionSecret(session_token="session-2", csrf_token="csrf-2")
         ),
-        managed_browser=FakeManagedBrowser(authenticated=True),
         history_store=history_store,
         codex_auth_sync=FailingSyncService(),
     )

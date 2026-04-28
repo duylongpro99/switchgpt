@@ -51,8 +51,6 @@ class Settings:
     metadata_path: Path
     keychain_service: str
     slot_count: int
-    chatgpt_base_url: str
-    managed_profile_dir: Path
     switch_history_path: Path
     codex_auth_file_path: Path
 
@@ -62,14 +60,11 @@ class Settings:
         data_dir = Path(get_env("SWITCHGPT_HOME", str(home / ".switchgpt")) or str(home / ".switchgpt"))
         slot_count = int(get_env("SWITCHGPT_SLOT_COUNT", "3") or "3")
         keychain_service = get_env("SWITCHGPT_KEYCHAIN_SERVICE", "switchgpt") or "switchgpt"
-        chatgpt_base_url = get_env("SWITCHGPT_BASE_URL", "https://chatgpt.com") or "https://chatgpt.com"
         return cls(
             data_dir=data_dir,
             metadata_path=data_dir / "accounts.json",
             keychain_service=keychain_service,
             slot_count=slot_count,
-            chatgpt_base_url=chatgpt_base_url,
-            managed_profile_dir=data_dir / "playwright-profile",
             switch_history_path=data_dir / "switch-history.jsonl",
             codex_auth_file_path=Path(
                 get_env("SWITCHGPT_CODEX_AUTH_PATH", str(home / ".codex" / "auth.json"))
@@ -106,20 +101,6 @@ class Settings:
                 category="config",
                 secret=False,
                 description="Maximum number of account slots supported by the store.",
-            ),
-            SettingsItem(
-                name="chatgpt_base_url",
-                value=self.chatgpt_base_url,
-                category="config",
-                secret=False,
-                description="Base URL used by the managed ChatGPT browser.",
-            ),
-            SettingsItem(
-                name="managed_profile_dir",
-                value=str(self.managed_profile_dir),
-                category="runtime-state",
-                secret=False,
-                description="Playwright profile directory for the managed browser.",
             ),
             SettingsItem(
                 name="switch_history_path",
