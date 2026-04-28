@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import base64
 from typing import Protocol
 
 from .diagnostics import redact_text
@@ -22,6 +23,51 @@ _KNOWN_FAILURE_PREFIXES = {
 _TOKEN_REDACTION_PATTERN = re.compile(
     r"\b(?P<key>access_token|refresh_token|id_token|account_id)=(?P<value>[^\s,;]+)"
 )
+
+
+def _normalize_email(value: object) -> str | None:
+    if type(value) is not str:
+        return None
+    email = value.strip().lower()
+    if not email:
+        return None
+    return email
+
+
+def _decode_jwt_payload(token: object) -> dict[str, object] | None:
+    if type(token) is not str or token.count(".") < 2:
+        return None
+    try:
+        payload_segment = token.split(".")[1]
+        payload_segment += "=" * (-len(payload_segment) % 4)
+        decoded = base64.urlsafe_b64decode(payload_segment.encode("utf-8"))
+        payload = json.loads(decoded)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _resolve_email_from_tokens(tokens: dict[str, object]) -> str | None:
+    access_payload = _decode_jwt_payload(tokens.get("access_token"))
+    if access_payload is not None:
+        profile = access_payload.get("https://api.openai.com/profile")
+        if isinstance(profile, dict):
+            profile_email = _normalize_email(profile.get("email"))
+            if profile_email is not None:
+                return profile_email
+        access_email = _normalize_email(access_payload.get("email"))
+        if access_email is not None:
+            return access_email
+
+    id_payload = _decode_jwt_payload(tokens.get("id_token"))
+    if id_payload is not None:
+        id_email = _normalize_email(id_payload.get("email"))
+        if id_email is not None:
+            return id_email
+
+    return None
 
 
 class CodexAuthTarget(Protocol):
@@ -199,6 +245,20 @@ class CodexAuthSyncService:
 
     def read_live_auth_json(self) -> dict[str, object]:
         return self._normalize_auth_json(self._file_target.read_source_auth_json())
+
+    def resolve_auth_email(self, payload: dict[str, object] | None = None) -> str | None:
+        try:
+            normalized = (
+                self.read_live_auth_json()
+                if payload is None
+                else self._normalize_auth_json(payload)
+            )
+        except Exception:
+            return None
+        tokens = normalized.get("tokens")
+        if not isinstance(tokens, dict):
+            return None
+        return _resolve_email_from_tokens(tokens)
 
     def _normalize_auth_json(self, payload: object) -> dict[str, object]:
         return _normalize_auth_json_payload(payload, occurred_at=None)

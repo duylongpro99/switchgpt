@@ -31,8 +31,14 @@ class RegistrationService:
         slot = self._account_store.next_empty_slot()
         key = f"switchgpt_account_{slot}"
         captured_at = datetime.now(UTC)
+        email = f"slot-{slot}@codex.local"
+        resolver = getattr(self._codex_auth_sync, "resolve_auth_email", None)
+        if callable(resolver):
+            resolved_email = resolver(None)
+            if type(resolved_email) is str and resolved_email:
+                email = resolved_email
         result = RegistrationResult(
-            email=f"slot-{slot}@codex.local",
+            email=email,
             secret=SessionSecret(session_token="", csrf_token=None),
             captured_at=captured_at,
         )

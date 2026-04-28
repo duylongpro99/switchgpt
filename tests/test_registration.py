@@ -80,6 +80,39 @@ def test_add_does_not_run_codex_sync_after_successful_persist() -> None:
     assert record.email == "slot-0@codex.local"
 
 
+def test_add_uses_live_codex_auth_email_when_available() -> None:
+    class FakeSecretStore:
+        def write(self, key, secret) -> None:
+            assert key == "switchgpt_account_0"
+            assert secret == SessionSecret(session_token="", csrf_token=None)
+
+    class FakeAccountStore:
+        def next_empty_slot(self) -> int:
+            return 0
+
+        def save_record(self, record) -> None:
+            assert record.email == "real.user@example.com"
+
+        def save_runtime_state(self, active_account_index, switched_at) -> None:
+            assert active_account_index == 0
+
+    class FakeCodexAuthSync:
+        def resolve_auth_email(self, payload):
+            assert payload is None
+            return "real.user@example.com"
+
+    service = RegistrationService(
+        FakeAccountStore(),
+        FakeSecretStore(),
+        FakeBrowserClient(),
+        codex_auth_sync=FakeCodexAuthSync(),
+    )
+
+    record = service.add()
+
+    assert record.email == "real.user@example.com"
+
+
 def test_add_rolls_back_secret_when_metadata_write_fails(tmp_path) -> None:
     deleted = []
 

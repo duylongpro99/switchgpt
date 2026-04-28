@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import base64
 import json
 import pytest
 
@@ -23,6 +24,20 @@ def build_auth_json(account_id: str = "account-1") -> dict[str, object]:
             "account_id": account_id,
         },
     }
+
+
+def build_jwt(payload: dict[str, object]) -> str:
+    header = (
+        base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode("utf-8"))
+        .decode("utf-8")
+        .rstrip("=")
+    )
+    body = (
+        base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8"))
+        .decode("utf-8")
+        .rstrip("=")
+    )
+    return f"{header}.{body}.signature"
 
 
 def test_import_auth_json_returns_imported_result_with_fingerprint(tmp_path) -> None:
@@ -181,6 +196,26 @@ def test_fingerprint_and_drift_detection_use_normalized_payloads(tmp_path) -> No
         )
         is True
     )
+
+
+def test_resolve_auth_email_prefers_access_token_profile_email(tmp_path) -> None:
+    auth_path = tmp_path / "auth.json"
+    service = CodexAuthSyncService(
+        file_target=CodexFileAuthTarget(auth_file_path=auth_path),
+        env_target=CodexEnvAuthTarget(),
+    )
+    payload = build_auth_json("account-1")
+    payload["tokens"]["access_token"] = build_jwt(
+        {
+            "https://api.openai.com/profile": {
+                "email": "cris923011@outlook.com",
+                "email_verified": True,
+            }
+        }
+    )
+    payload["tokens"]["id_token"] = build_jwt({"email": "fallback@example.com"})
+
+    assert service.resolve_auth_email(payload) == "cris923011@outlook.com"
 
 
 def test_raise_for_failed_sync_wraps_failed_result_in_domain_error() -> None:

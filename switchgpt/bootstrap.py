@@ -14,6 +14,7 @@ from .config import Settings
 from .doctor_service import DoctorService
 from .errors import SwitchError
 from .managed_browser import ManagedBrowser
+from .models import AccountRecord, AccountState
 from .playwright_client import BrowserRegistrationClient
 from .registration import RegistrationService
 from .secret_store import KeychainSecretStore
@@ -72,15 +73,34 @@ class CodexImportCommandService:
         self._codex_auth_sync = codex_auth_sync
 
     def run(self, *, slot: int):
-        account = self._account_store.get_record(slot)
+        auth_json = self._codex_auth_sync.read_live_auth_json()
+        occurred_at = datetime.now(UTC)
+        account = self._get_or_create_account(
+            slot=slot,
+            auth_json=auth_json,
+            occurred_at=occurred_at,
+        )
         secret = self._secret_store.read(account.keychain_key)
         if secret is None:
             raise SwitchError(f"Stored session secret is missing for slot {slot}.")
-        auth_json = self._codex_auth_sync.read_live_auth_json()
         result = self._codex_auth_sync.import_auth_json(
             slot=slot,
-            occurred_at=datetime.now(UTC),
+            occurred_at=occurred_at,
         )
+        resolved_email = self._resolve_auth_email(auth_json) or account.email
+        if resolved_email != account.email:
+            self._account_store.save_record(
+                AccountRecord(
+                    index=account.index,
+                    email=resolved_email,
+                    keychain_key=account.keychain_key,
+                    registered_at=account.registered_at,
+                    last_reauth_at=account.last_reauth_at,
+                    last_validated_at=account.last_validated_at,
+                    status=account.status,
+                    last_error=account.last_error,
+                )
+            )
         self._secret_store.replace(
             account.keychain_key,
             SessionSecret(
@@ -94,6 +114,49 @@ class CodexImportCommandService:
             if callable(saver):
                 saver(slot=slot, fingerprint=result.fingerprint)
         return result
+
+    def _get_or_create_account(self, *, slot: int, auth_json, occurred_at: datetime):
+        try:
+            return self._account_store.get_record(slot)
+        except SwitchError as exc:
+            if str(exc) != f"Account slot {slot} is not registered.":
+                raise
+
+        keychain_key = f"switchgpt_account_{slot}"
+        self._secret_store.write(
+            keychain_key,
+            SessionSecret(session_token="", csrf_token=None),
+        )
+        record = AccountRecord(
+            index=slot,
+            email=self._resolve_auth_email(auth_json) or f"slot-{slot}@codex.local",
+            keychain_key=keychain_key,
+            registered_at=occurred_at,
+            last_reauth_at=occurred_at,
+            last_validated_at=occurred_at,
+            status=AccountState.REGISTERED,
+            last_error=None,
+        )
+        try:
+            self._account_store.save_record(record)
+        except Exception:
+            with suppress(Exception):
+                self._secret_store.delete(keychain_key)
+            raise
+        self._account_store.save_runtime_state(
+            active_account_index=slot,
+            switched_at=occurred_at,
+        )
+        return record
+
+    def _resolve_auth_email(self, auth_json) -> str | None:
+        resolver = getattr(self._codex_auth_sync, "resolve_auth_email", None)
+        if not callable(resolver):
+            return None
+        resolved = resolver(auth_json)
+        if type(resolved) is not str or not resolved:
+            return None
+        return resolved
 
 
 class RemoveCommandService:

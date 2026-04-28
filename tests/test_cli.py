@@ -350,14 +350,107 @@ def test_codex_import_command_service_requires_secret_for_slot() -> None:
             assert key == "switchgpt_account_2"
             return None
 
+    class FakeImportService:
+        def read_live_auth_json(self):
+            return {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "access-2",
+                    "refresh_token": "refresh-2",
+                    "id_token": "id-2",
+                    "account_id": "account-2",
+                },
+            }
+
     from switchgpt.bootstrap import CodexImportCommandService
 
     with pytest.raises(SwitchError, match="Stored session secret is missing for slot 2."):
         CodexImportCommandService(
             FakeAccountStore(),
             FakeSecretStore(),
-            object(),
+            FakeImportService(),
         ).run(slot=2)
+
+
+def test_codex_import_command_service_creates_missing_slot_with_live_auth_email() -> None:
+    events: list[object] = []
+    account_records: dict[int, object] = {}
+
+    class FakeAccountStore:
+        def get_record(self, index: int):
+            if index not in account_records:
+                raise SwitchError(f"Account slot {index} is not registered.")
+            return account_records[index]
+
+        def save_record(self, record) -> None:
+            events.append(("record", record.index, record.email))
+            account_records[record.index] = record
+
+        def save_runtime_state(self, active_account_index, switched_at) -> None:
+            events.append(("runtime", active_account_index, switched_at))
+
+        def save_codex_import_state(self, *, slot: int, fingerprint: str) -> None:
+            events.append(("import-state", slot, fingerprint))
+
+    class FakeSecretStore:
+        def __init__(self) -> None:
+            self.values: dict[str, object] = {}
+
+        def read(self, key: str):
+            if key != "switchgpt_account_4":
+                raise AssertionError(f"unexpected key {key}")
+            return self.values.get(key)
+
+        def write(self, key: str, secret) -> None:
+            events.append(("secret-write", key, secret.session_token, secret.csrf_token))
+            self.values[key] = secret
+
+        def replace(self, key: str, secret) -> None:
+            events.append(("secret-replace", key, secret.codex_auth_json["tokens"]["account_id"]))
+            self.values[key] = secret
+
+    class FakeImportService:
+        def read_live_auth_json(self):
+            return {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "access-4",
+                    "refresh_token": "refresh-4",
+                    "id_token": "id-4",
+                    "account_id": "account-4",
+                },
+            }
+
+        def resolve_auth_email(self, payload):
+            assert payload["tokens"]["account_id"] == "account-4"
+            return "imported@example.com"
+
+        def import_auth_json(self, *, slot: int, occurred_at):
+            assert slot == 4
+            assert isinstance(occurred_at, datetime)
+            return type(
+                "Result",
+                (),
+                {"outcome": "imported", "method": "file", "fingerprint": "fp-4"},
+            )()
+
+    from switchgpt.bootstrap import CodexImportCommandService
+
+    result = CodexImportCommandService(
+        FakeAccountStore(),
+        FakeSecretStore(),
+        FakeImportService(),
+    ).run(slot=4)
+
+    assert result.fingerprint == "fp-4"
+    assert account_records[4].email == "imported@example.com"
+    assert [event[0] for event in events] == [
+        "secret-write",
+        "record",
+        "runtime",
+        "secret-replace",
+        "import-state",
+    ]
 
 
 def test_status_command_is_registered(monkeypatch, tmp_path) -> None:
