@@ -174,7 +174,7 @@ def test_switch_to_raises_strict_codex_sync_failure_with_repair_guidance() -> No
 
     with pytest.raises(
         CodexAuthSyncFailedError,
-        match="retry `switchgpt switch --to 1`",
+        match="retry `sca switch --to 1`",
     ):
         service.switch_to(index=1)
 
@@ -211,7 +211,7 @@ def test_switch_to_missing_imported_codex_auth_raises_repair_guidance() -> None:
 
     with pytest.raises(
         CodexAuthSyncFailedError,
-        match="switchgpt import-codex-auth --slot 1",
+        match="sca import-codex-auth --slot 1",
     ):
         service.switch_to(index=1)
 
@@ -260,6 +260,71 @@ def test_switch_to_projects_codex_auth_without_browser_dependencies() -> None:
     assert result.account.index == 1
     assert service._account_store.saved_runtime_state[0] == 1
     assert service._history_store.events[-1].result == "success"
+
+
+def test_switch_to_persists_refreshed_codex_auth_after_projection() -> None:
+    refreshed_auth = {
+        "tokens": {
+            "access_token": "access-refreshed",
+            "refresh_token": "refresh-refreshed",
+            "id_token": "id-refreshed",
+            "account_id": "account-2",
+        }
+    }
+
+    class FakeSyncService:
+        def sync_active_slot(self, **kwargs):
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "ok",
+                    "method": "file",
+                    "failure_class": None,
+                    "message": None,
+                    "refreshed_auth_json": refreshed_auth,
+                },
+            )()
+
+    class RecordingSecretStore(FakeSecretStore):
+        def __init__(self, secret):
+            super().__init__(secret)
+            self.replaced = None
+
+        def replace(self, key, secret) -> None:
+            self.replaced = (key, secret)
+
+    secret_store = RecordingSecretStore(
+        SessionSecret(
+            session_token="session-2",
+            csrf_token="csrf-2",
+            codex_auth_json={
+                "tokens": {
+                    "access_token": "access-old",
+                    "refresh_token": "refresh-old",
+                    "id_token": "id-old",
+                    "account_id": "account-2",
+                }
+            },
+        )
+    )
+    service = SwitchService(
+        account_store=FakeAccountStore(
+            [build_account(0, "a@example.com"), build_account(1, "b@example.com")],
+            active_account_index=0,
+        ),
+        secret_store=secret_store,
+        history_store=FakeHistoryStore(),
+        codex_auth_sync=FakeSyncService(),
+    )
+
+    service.switch_to(index=1)
+
+    assert secret_store.replaced[0] == "switchgpt_account_1"
+    assert (
+        secret_store.replaced[1].codex_auth_json["tokens"]["refresh_token"]
+        == "refresh-refreshed"
+    )
 
 
 def test_switch_to_records_watch_auto_mode_for_automation_success() -> None:

@@ -199,7 +199,7 @@ def test_run_warns_when_last_codex_sync_does_not_match_active_slot() -> None:
 
     codex_sync_check = next(check for check in report.checks if check.name == "codex-sync")
     assert codex_sync_check.status == "warn"
-    assert "switchgpt codex-sync" in codex_sync_check.next_action
+    assert "sca codex-sync" in codex_sync_check.next_action
     assert "doctor" in codex_sync_check.next_action
     assert report.readiness == "needs-attention"
 
@@ -245,7 +245,7 @@ def test_run_warns_when_last_codex_sync_failed_for_active_slot() -> None:
     codex_sync_check = next(check for check in report.checks if check.name == "codex-sync")
     assert codex_sync_check.status == "warn"
     assert "failed" in codex_sync_check.detail
-    assert "switchgpt codex-sync" in codex_sync_check.next_action
+    assert "sca codex-sync" in codex_sync_check.next_action
 
 
 def test_run_warns_when_last_codex_sync_failed_for_different_slot_than_active() -> None:
@@ -270,4 +270,4 @@ def test_run_warns_when_last_codex_sync_failed_for_different_slot_than_active() 
     assert "slot 1" in codex_sync_check.detail
     assert "active slot is 0" in codex_sync_check.detail
     assert "failed for active slot 0" not in codex_sync_check.detail
-    assert "switchgpt codex-sync" in codex_sync_check.next_action
+    assert "sca codex-sync" in codex_sync_check.next_action

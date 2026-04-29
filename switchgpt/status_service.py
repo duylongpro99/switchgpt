@@ -107,19 +107,19 @@ class StatusService:
             elif needs_reauth_slot is not None:
                 readiness = "needs-attention"
                 next_action = (
-                    f"Reauthenticate slot {needs_reauth_slot} with `switchgpt add --reauth "
-                    f"{needs_reauth_slot} --import-codex-auth` after running `codex login`."
+                    f"Reauthenticate slot {needs_reauth_slot} with `sca add --reauth "
+                    f"{needs_reauth_slot}` after running `codex login`."
                 )
 
         if readiness == "ready" and codex_sync.state == "out-of-sync":
             readiness = "degraded"
             next_action = (
-                "Run `switchgpt codex-sync` to resync Codex auth to the active slot."
+                "Run `sca codex-sync` to resync Codex auth to the active slot."
             )
         elif readiness == "ready" and codex_sync.state == "missing":
             readiness = "degraded"
             next_action = (
-                f"Run `codex login` with the target account, then `switchgpt import-codex-auth --slot {active_account_index}`."
+                f"Run `codex login` with the target account, then `sca import-codex-auth --slot {active_account_index}`."
             )
 
         return StatusSummary(

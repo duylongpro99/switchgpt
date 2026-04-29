@@ -14,14 +14,14 @@ uv sync --dev
 
 ## Local Commands
 
-- `uv run switchgpt paths`
-- `uv run switchgpt doctor`
-- `uv run switchgpt status`
-- `uv run switchgpt add`
-- `uv run switchgpt add --reauth <slot>`
-- `uv run switchgpt import-codex-auth --slot <slot>`
-- `uv run switchgpt codex-sync`
-- `uv run switchgpt switch`
+- `uv run sca paths`
+- `uv run sca doctor`
+- `uv run sca status`
+- `uv run sca add`
+- `uv run sca add --reauth <slot>`
+- `uv run sca import-codex-auth --slot <slot>`
+- `uv run sca codex-sync`
+- `uv run sca switch`
 
 Use `paths` to inspect the repository-owned runtime locations.
 Use `doctor` to check local readiness.
@@ -47,22 +47,22 @@ codex login
 2. Register a new slot and import the current live Codex auth file:
 
 ```bash
-uv run switchgpt add
+uv run sca add
 ```
 
 3. Import the resulting live Codex auth file into an existing slot when needed:
 
 ```bash
-uv run switchgpt import-codex-auth --slot <slot>
+uv run sca import-codex-auth --slot <slot>
 ```
 
 4. When needed, re-project the active slot into the live Codex auth path:
 
 ```bash
-uv run switchgpt codex-sync
+uv run sca codex-sync
 ```
 
-`switch`, `status`, and `doctor` now assume this imported-auth flow. If a slot is missing imported Codex auth, repair guidance points to `codex login` plus `switchgpt import-codex-auth`.
+`switch`, `status`, and `doctor` now assume this imported-auth flow. If a slot is missing imported Codex auth, repair guidance points to `codex login` plus `sca import-codex-auth`.
 
 ## Testing
 

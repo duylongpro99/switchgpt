@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from .codex_auth_sync import raise_for_failed_sync
 from .diagnostics import redact_text
 from .errors import CodexAuthSyncFailedError, SwitchError
+from .secret_store import SessionSecret
 from .switch_history import SwitchEvent
 
 
@@ -131,9 +132,19 @@ class SwitchService:
         except CodexAuthSyncFailedError as exc:
             raise CodexAuthSyncFailedError(
                 "Codex auth sync failed after switch. Run `codex login` with the target account, then "
-                f"`switchgpt import-codex-auth --slot {account.index}` and retry `switchgpt switch --to {account.index}`.",
+                f"`sca import-codex-auth --slot {account.index}` and retry `sca switch --to {account.index}`.",
                 failure_class=exc.failure_class,
             ) from exc
+        refreshed_auth_json = getattr(result, "refreshed_auth_json", None)
+        if refreshed_auth_json is not None:
+            self._secret_store.replace(
+                account.keychain_key,
+                SessionSecret(
+                    session_token=secret.session_token,
+                    csrf_token=secret.csrf_token,
+                    codex_auth_json=refreshed_auth_json,
+                ),
+            )
 
     def _success_result_for_mode(self, mode: str) -> str:
         return "switch-succeeded" if mode == "watch-auto" else "success"

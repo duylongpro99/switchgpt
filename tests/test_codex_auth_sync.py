@@ -102,6 +102,71 @@ def test_sync_active_slot_writes_stored_auth_json_atomically(tmp_path) -> None:
     assert not auth_path.with_name("auth.json.tmp").exists()
 
 
+def test_sync_active_slot_refreshes_stored_auth_before_projection(tmp_path) -> None:
+    auth_path = tmp_path / "auth.json"
+
+    class FakeRefreshClient:
+        def refresh(self, payload):
+            assert payload["tokens"]["refresh_token"] == "refresh-account-2"
+            refreshed = build_auth_json("account-2")
+            refreshed["tokens"]["access_token"] = "access-refreshed"
+            refreshed["tokens"]["refresh_token"] = "refresh-refreshed"
+            refreshed["tokens"]["id_token"] = "id-refreshed"
+            return refreshed
+
+    service = CodexAuthSyncService(
+        file_target=CodexFileAuthTarget(auth_file_path=auth_path),
+        env_target=CodexEnvAuthTarget(),
+        refresh_client=FakeRefreshClient(),
+    )
+
+    result = service.sync_active_slot(
+        active_slot=2,
+        email="account2@example.com",
+        session_token="session-2",
+        csrf_token="csrf-2",
+        codex_auth_json=build_auth_json("account-2"),
+        occurred_at=datetime(2026, 4, 21, 10, 5, tzinfo=UTC),
+    )
+
+    written = json.loads(auth_path.read_text(encoding="utf-8"))
+    assert result.outcome == "ok"
+    assert result.refreshed_auth_json["tokens"]["refresh_token"] == "refresh-refreshed"
+    assert written["tokens"]["access_token"] == "access-refreshed"
+    assert written["tokens"]["refresh_token"] == "refresh-refreshed"
+
+
+def test_sync_active_slot_fails_when_refresh_token_is_rejected(tmp_path) -> None:
+    auth_path = tmp_path / "auth.json"
+
+    class FailingRefreshClient:
+        def refresh(self, payload):
+            del payload
+            raise RuntimeError(
+                "codex-auth-refresh-failed: Your refresh token was revoked."
+            )
+
+    service = CodexAuthSyncService(
+        file_target=CodexFileAuthTarget(auth_file_path=auth_path),
+        env_target=CodexEnvAuthTarget(),
+        refresh_client=FailingRefreshClient(),
+    )
+
+    result = service.sync_active_slot(
+        active_slot=2,
+        email="account2@example.com",
+        session_token="session-2",
+        csrf_token="csrf-2",
+        codex_auth_json=build_auth_json("account-2"),
+        occurred_at=datetime(2026, 4, 21, 10, 5, tzinfo=UTC),
+    )
+
+    assert result.outcome == "failed"
+    assert result.failure_class == "codex-auth-refresh-failed"
+    assert "refresh token was revoked" in result.message
+    assert not auth_path.exists()
+
+
 def test_sync_active_slot_fails_when_slot_has_no_imported_auth_json(tmp_path) -> None:
     service = CodexAuthSyncService(
         file_target=CodexFileAuthTarget(auth_file_path=tmp_path / "auth.json"),

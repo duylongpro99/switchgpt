@@ -184,12 +184,17 @@ def test_build_codex_auth_sync_service_passes_auth_path_to_file_target(monkeypat
             captured["auth_file_path"] = auth_file_path
 
     class FakeSyncService:
-        def __init__(self, *, file_target, account_store=None):
+        def __init__(self, *, file_target, account_store=None, refresh_client=None):
             captured["file_target"] = file_target
             captured["account_store"] = account_store
+            captured["refresh_client"] = refresh_client
 
     monkeypatch.setattr("switchgpt.bootstrap.CodexFileAuthTarget", FakeFileTarget)
     monkeypatch.setattr("switchgpt.bootstrap.CodexAuthSyncService", FakeSyncService)
+    monkeypatch.setattr(
+        "switchgpt.bootstrap.CodexTokenRefreshClient",
+        lambda: "refresh-client",
+    )
 
     from switchgpt.bootstrap import build_codex_auth_sync_service
 
@@ -197,6 +202,7 @@ def test_build_codex_auth_sync_service_passes_auth_path_to_file_target(monkeypat
 
     assert captured["auth_file_path"] == "auth.json"
     assert captured["account_store"] is runtime.account_store
+    assert captured["refresh_client"] == "refresh-client"
 
 
 def test_codex_sync_command_service_syncs_active_slot_from_runtime_state() -> None:
@@ -253,6 +259,78 @@ def test_codex_sync_command_service_syncs_active_slot_from_runtime_state() -> No
     assert sync_call["session_token"] == "session-2"
     assert sync_call["csrf_token"] == "csrf-2"
     assert isinstance(sync_call["occurred_at"], datetime)
+
+
+def test_codex_sync_command_service_persists_refreshed_auth_json() -> None:
+    replaced: dict[str, object] = {}
+    refreshed_auth = {
+        "tokens": {
+            "access_token": "access-refreshed",
+            "refresh_token": "refresh-refreshed",
+            "id_token": "id-refreshed",
+            "account_id": "account-1",
+        }
+    }
+
+    class FakeAccountStore:
+        class Snapshot:
+            active_account_index = 1
+
+        def load(self):
+            return self.Snapshot()
+
+        def get_record(self, index: int):
+            return type(
+                "Account",
+                (),
+                {
+                    "index": index,
+                    "email": "account2@example.com",
+                    "keychain_key": "switchgpt_account_1",
+                },
+            )()
+
+    class FakeSecretStore:
+        def read(self, key: str):
+            assert key == "switchgpt_account_1"
+            return type(
+                "Secret",
+                (),
+                {
+                    "session_token": "session-2",
+                    "csrf_token": "csrf-2",
+                    "codex_auth_json": {"tokens": {"refresh_token": "old"}},
+                },
+            )()
+
+        def replace(self, key: str, secret) -> None:
+            replaced["key"] = key
+            replaced["secret"] = secret
+
+    class FakeSyncService:
+        def sync_active_slot(self, **kwargs):
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "ok",
+                    "method": "file",
+                    "failure_class": None,
+                    "message": None,
+                    "refreshed_auth_json": refreshed_auth,
+                },
+            )()
+
+    from switchgpt.bootstrap import CodexSyncCommandService
+
+    CodexSyncCommandService(
+        FakeAccountStore(),
+        FakeSecretStore(),
+        FakeSyncService(),
+    ).run()
+
+    assert replaced["key"] == "switchgpt_account_1"
+    assert replaced["secret"].codex_auth_json["tokens"]["refresh_token"] == "refresh-refreshed"
 
 
 def test_codex_import_command_service_stores_live_auth_json_for_slot() -> None:
@@ -749,7 +827,7 @@ def test_render_status_summary_includes_codex_sync_lines() -> None:
             "slots": [],
             "readiness": "degraded",
             "latest_result": None,
-            "next_action": "Run `switchgpt codex-sync` and rerun status.",
+            "next_action": "Run `sca codex-sync` and rerun status.",
             "active_account_index": 0,
             "codex_sync": type(
                 "CodexSyncStatus",
@@ -841,7 +919,7 @@ def test_add_command_exits_non_zero_on_strict_codex_sync_failure_with_repair_hin
 
     assert result.exit_code == 1
     assert "Codex auth sync failed after registration update." in result.stderr
-    assert "switchgpt codex-sync" in result.stderr
+    assert "sca codex-sync" in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -896,7 +974,7 @@ def test_add_command_reports_codex_import_failure_after_registration(monkeypatch
         def run(self, *, slot: int):
             assert slot == 1
             raise SwitchError(
-                "Codex auth import failed. Run `codex login` with the target account, then retry `switchgpt import-codex-auth --slot 1`."
+                "Codex auth import failed. Run `codex login` with the target account, then retry `sca import-codex-auth --slot 1`."
             )
 
     monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
@@ -946,18 +1024,37 @@ def test_reauth_command_imports_codex_auth_for_existing_slot(monkeypatch) -> Non
     assert events == [("reauth", 0), ("import", 0)]
 
 
-def test_reauth_command_requires_slot_index(monkeypatch) -> None:
+def test_reauth_command_imports_codex_auth_without_extra_flag(monkeypatch) -> None:
+    events: list[object] = []
+
     class FakeRegistrationService:
         def reauth(self, index: int):
+            events.append(("reauth", index))
+
             class Result:
                 index = 0
                 email = "account1@example.com"
 
             return Result()
 
+    class FakeImportService:
+        def run(self, *, slot: int):
+            events.append(("import", slot))
+            return type(
+                "Result",
+                (),
+                {
+                    "outcome": "imported",
+                    "fingerprint": "fp-reauth",
+                },
+            )()
+
     monkeypatch.setattr("switchgpt.cli.build_registration_service", lambda: FakeRegistrationService())
+    monkeypatch.setattr("switchgpt.cli.build_codex_import_service", lambda: FakeImportService())
     result = runner.invoke(app, ["add", "--reauth", "0"])
     assert result.exit_code == 0
+    assert "Imported Codex auth for slot 0." in result.stdout
+    assert events == [("reauth", 0), ("import", 0)]
 
 
 def test_add_command_reports_missing_reauth_slot_cleanly(monkeypatch, tmp_path) -> None:
@@ -1170,7 +1267,7 @@ def test_import_codex_auth_reports_manual_repair_message_on_failure(monkeypatch)
         def run(self, *, slot: int):
             assert slot == 2
             raise SwitchError(
-                "Codex auth import failed. Run `codex login` with the target account, then retry `switchgpt import-codex-auth --slot 2`."
+                "Codex auth import failed. Run `codex login` with the target account, then retry `sca import-codex-auth --slot 2`."
             )
 
     monkeypatch.setattr(
@@ -1205,7 +1302,7 @@ def test_switch_command_surfaces_codex_sync_failure_with_repair_hint(monkeypatch
     class FakeService:
         def switch_to(self, index: int):
             raise CodexAuthSyncFailedError(
-                "Codex auth sync failed after switch. Run `switchgpt codex-sync` to repair.",
+                "Codex auth sync failed after switch. Run `sca codex-sync` to repair.",
                 failure_class="codex-auth-fallback-failed",
             )
 
@@ -1215,7 +1312,7 @@ def test_switch_command_surfaces_codex_sync_failure_with_repair_hint(monkeypatch
 
     assert result.exit_code == 1
     assert "Codex auth sync failed after switch." in result.stderr
-    assert "switchgpt codex-sync" in result.stderr
+    assert "sca codex-sync" in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -1226,7 +1323,7 @@ def test_switch_command_surfaces_codex_only_repair_guidance(monkeypatch) -> None
             assert mode == "explicit-target"
             raise CodexAuthSyncFailedError(
                 "Codex auth sync failed after switch. Run `codex login` with the target account, then "
-                "`switchgpt import-codex-auth --slot 1` and retry `switchgpt switch --to 1`.",
+                "`sca import-codex-auth --slot 1` and retry `sca switch --to 1`.",
                 failure_class="codex-auth-source-missing",
             )
 
@@ -1239,8 +1336,8 @@ def test_switch_command_surfaces_codex_only_repair_guidance(monkeypatch) -> None
     result = runner.invoke(app, ["switch", "--to", "1"])
 
     assert result.exit_code == 1
-    assert "switchgpt import-codex-auth --slot 1" in result.stderr
-    assert "switchgpt switch --to 1" in result.stderr
+    assert "sca import-codex-auth --slot 1" in result.stderr
+    assert "sca switch --to 1" in result.stderr
 
 
 def test_switch_command_surfaces_switch_error_cleanly(monkeypatch) -> None:
@@ -1309,7 +1406,7 @@ def test_doctor_command_reports_platform_failure_from_service(monkeypatch) -> No
                                 "name": "platform",
                                 "status": "fail",
                                 "detail": "switchgpt requires macOS.",
-                                "next_action": "Run switchgpt on macOS.",
+                                "next_action": "Run sca on macOS.",
                             },
                         )()
                     ],
@@ -1323,4 +1420,3 @@ def test_doctor_command_reports_platform_failure_from_service(monkeypatch) -> No
     assert result.exit_code == 0
     assert "Readiness: needs-attention" in result.stdout
     assert "platform: fail - switchgpt requires macOS." in result.stdout
-

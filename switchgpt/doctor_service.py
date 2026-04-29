@@ -53,7 +53,7 @@ class DoctorService:
                 "platform",
                 "fail",
                 "switchgpt requires macOS.",
-                "Run switchgpt on macOS.",
+                "Run sca on macOS.",
             )
         return DoctorCheck("platform", "pass", "macOS detected.", None)
 
@@ -115,10 +115,10 @@ class DoctorService:
         import_fingerprints = getattr(snapshot, "codex_import_fingerprints", {}) or {}
         imported_fingerprint = import_fingerprints.get(active_slot)
         import_action = (
-            f"Run `codex login` with the target account, then `switchgpt import-codex-auth --slot {active_slot}`, then rerun `switchgpt doctor`."
+            f"Run `codex login` with the target account, then `sca import-codex-auth --slot {active_slot}`, then rerun `sca doctor`."
         )
         repair_action = (
-            "Run `switchgpt codex-sync` for the active slot, then rerun `switchgpt doctor`."
+            "Run `sca codex-sync` for the active slot, then rerun `sca doctor`."
         )
 
         if imported_fingerprint is None:

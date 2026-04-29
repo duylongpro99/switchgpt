@@ -77,11 +77,11 @@ def _persisted_codex_sync_state_from_snapshot(snapshot):
 
 def _render_codex_sync_repair_message(message: str | None) -> str:
     detail = (message or "Codex auth sync failed.").strip()
-    if "switchgpt codex-sync" in detail or "switchgpt import-codex-auth" in detail:
+    if "sca codex-sync" in detail or "sca import-codex-auth" in detail:
         return detail
     if detail.endswith("."):
-        return f"{detail} Run `switchgpt codex-sync` to repair."
-    return f"{detail}. Run `switchgpt codex-sync` to repair."
+        return f"{detail} Run `sca codex-sync` to repair."
+    return f"{detail}. Run `sca codex-sync` to repair."
 
 
 def _import_codex_auth_for_slot(slot: int) -> None:
@@ -140,6 +140,7 @@ def add(
     reauth: int | None = typer.Option(None, "--reauth"),
     import_codex_auth: bool = typer.Option(False, "--import-codex-auth"),
 ) -> None:
+    del import_codex_auth  # Compatibility flag; add and reauth now always import.
     try:
         ensure_supported_platform()
         service = build_registration_service()
@@ -150,8 +151,7 @@ def add(
             return
         record = service.reauth(reauth)
         print(f"Reauthenticated {record.email} in slot {record.index}.")
-        if import_codex_auth:
-            _import_codex_auth_for_slot(record.index)
+        _import_codex_auth_for_slot(record.index)
     except CodexAuthSyncFailedError as exc:
         typer.echo(_render_codex_sync_repair_message(str(exc)), err=True)
         raise typer.Exit(code=1) from exc

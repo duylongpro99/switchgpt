@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
 import json
 from pathlib import Path
 import re
 import base64
+import urllib.error
+import urllib.request
 from typing import Protocol
 
 from .diagnostics import redact_text
@@ -17,6 +19,7 @@ _REQUIRED_TOKEN_KEYS = ("access_token", "refresh_token", "id_token", "account_id
 _KNOWN_FAILURE_PREFIXES = {
     "codex-auth-source-missing",
     "codex-auth-format-invalid",
+    "codex-auth-refresh-failed",
     "codex-auth-write-failed",
     "codex-auth-verify-failed",
 }
@@ -80,6 +83,25 @@ class CodexAuthTarget(Protocol):
         occurred_at: datetime,
     ) -> None: ...
 
+
+class CodexAuthRefreshClient(Protocol):
+    def refresh(self, payload: dict[str, object]) -> dict[str, object]: ...
+
+
+def _resolve_client_id_from_tokens(tokens: dict[str, object]) -> str | None:
+    id_payload = _decode_jwt_payload(tokens.get("id_token"))
+    if id_payload is None:
+        return None
+    audience = id_payload.get("aud")
+    if type(audience) is str and audience:
+        return audience
+    if isinstance(audience, list):
+        for item in audience:
+            if type(item) is str and item:
+                return item
+    return None
+
+
 def _normalize_auth_json_payload(
     payload: object,
     *,
@@ -139,6 +161,103 @@ class CodexSyncResult:
     failure_class: str | None
     message: str | None
     fingerprint: str | None = None
+    refreshed_auth_json: dict[str, object] | None = field(default=None, repr=False)
+
+
+class CodexTokenRefreshClient:
+    def __init__(
+        self,
+        *,
+        token_endpoint: str = "https://auth0.openai.com/oauth/token",
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        self._token_endpoint = token_endpoint
+        self._timeout_seconds = timeout_seconds
+
+    def refresh(self, payload: dict[str, object]) -> dict[str, object]:
+        tokens = payload.get("tokens")
+        if not isinstance(tokens, dict):
+            raise RuntimeError("codex-auth-format-invalid: auth.json missing tokens object")
+        refresh_token = tokens.get("refresh_token")
+        if type(refresh_token) is not str or not refresh_token:
+            raise RuntimeError("codex-auth-format-invalid: auth.json missing tokens.refresh_token")
+        client_id = _resolve_client_id_from_tokens(tokens)
+        if client_id is None:
+            raise RuntimeError("codex-auth-refresh-failed: unable to resolve OAuth client id")
+
+        request_payload = json.dumps(
+            {
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "refresh_token": refresh_token,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self._token_endpoint,
+            data=request_payload,
+            headers={
+                "content-type": "application/json",
+                "accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = self._read_error_detail(exc)
+            raise RuntimeError(f"codex-auth-refresh-failed: {detail}") from exc
+        except OSError as exc:
+            raise RuntimeError("codex-auth-refresh-failed: token refresh request failed") from exc
+
+        try:
+            refreshed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("codex-auth-refresh-failed: token refresh response was not JSON") from exc
+        if not isinstance(refreshed, dict):
+            raise RuntimeError("codex-auth-refresh-failed: token refresh response was invalid")
+        return _auth_json_from_refresh_response(payload, refreshed)
+
+    def _read_error_detail(self, exc: urllib.error.HTTPError) -> str:
+        try:
+            raw = exc.read().decode("utf-8")
+            payload = json.loads(raw)
+        except Exception:
+            return f"token endpoint returned HTTP {exc.code}"
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict):
+                message = error.get("message") or error.get("error_description")
+                if type(message) is str and message:
+                    return message
+            description = payload.get("error_description")
+            if type(description) is str and description:
+                return description
+        return f"token endpoint returned HTTP {exc.code}"
+
+
+def _auth_json_from_refresh_response(
+    original: dict[str, object],
+    refreshed: dict[str, object],
+) -> dict[str, object]:
+    if isinstance(refreshed.get("tokens"), dict):
+        return refreshed
+
+    original_tokens = original.get("tokens")
+    if not isinstance(original_tokens, dict):
+        raise RuntimeError("codex-auth-format-invalid: auth.json missing tokens object")
+
+    tokens = dict(original_tokens)
+    for key in ("access_token", "refresh_token", "id_token"):
+        value = refreshed.get(key)
+        if type(value) is str and value:
+            tokens[key] = value
+    tokens["account_id"] = original_tokens.get("account_id")
+
+    normalized: dict[str, object] = dict(original)
+    normalized["tokens"] = tokens
+    normalized.pop("last_refresh", None)
+    return normalized
 
 
 class CodexAuthSyncService:
@@ -148,10 +267,12 @@ class CodexAuthSyncService:
         file_target: CodexAuthTarget,
         env_target=None,
         account_store=None,
+        refresh_client: CodexAuthRefreshClient | None = None,
     ) -> None:
         del env_target
         self._file_target = file_target
         self._account_store = account_store
+        self._refresh_client = refresh_client
 
     def import_auth_json(self, *, slot: int, occurred_at: datetime) -> CodexSyncResult:
         try:
@@ -203,7 +324,11 @@ class CodexAuthSyncService:
 
         try:
             normalized = self._normalize_auth_json(codex_auth_json)
-            self._file_target.apply_auth_json(normalized, occurred_at=occurred_at)
+            refreshed_auth_json = self._refresh_auth_json_if_configured(
+                normalized,
+                occurred_at=occurred_at,
+            )
+            self._file_target.apply_auth_json(refreshed_auth_json, occurred_at=occurred_at)
         except Exception as exc:
             return self._finalize_result(
                 occurred_at=occurred_at,
@@ -219,7 +344,10 @@ class CodexAuthSyncService:
                 method="file",
                 failure_class=None,
                 message=None,
-                fingerprint=self._fingerprint_auth_json(normalized),
+                fingerprint=self._fingerprint_auth_json(refreshed_auth_json),
+                refreshed_auth_json=refreshed_auth_json
+                if self._refresh_client is not None
+                else None,
             ),
         )
 
@@ -265,6 +393,17 @@ class CodexAuthSyncService:
 
     def _fingerprint_auth_json(self, payload: dict[str, object]) -> str:
         return _fingerprint_auth_json_payload(payload)
+
+    def _refresh_auth_json_if_configured(
+        self,
+        payload: dict[str, object],
+        *,
+        occurred_at: datetime,
+    ) -> dict[str, object]:
+        if self._refresh_client is None:
+            return payload
+        refreshed = self._refresh_client.refresh(payload)
+        return _normalize_auth_json_payload(refreshed, occurred_at=occurred_at)
 
     def _failure_result(self, exc: Exception) -> CodexSyncResult:
         message = self._redact_failure_message(str(exc)) or "Codex auth sync failed."

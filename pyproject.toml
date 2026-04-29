@@ -17,7 +17,7 @@ dev = [
 ]
 
 [project.scripts]
-switchgpt = "switchgpt.cli:main"
+sca = "switchgpt.cli:main"
 
 [tool.setuptools]
 packages = ["switchgpt"]

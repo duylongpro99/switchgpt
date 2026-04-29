@@ -3,13 +3,13 @@
 ## Canonical Local Workflow
 
 1. Install the development environment with `uv sync --dev`.
-2. Use `uv run switchgpt doctor` to check local readiness.
-4. Use `uv run switchgpt paths` to confirm repository-owned runtime locations.
-5. Use `uv run switchgpt status` to inspect account state.
-6. Run `codex login`, then use `uv run switchgpt add` or `uv run switchgpt add --reauth <slot>` to manage account slots.
-7. Use `uv run switchgpt import-codex-auth --slot <slot>` when you need to refresh a slot's stored Codex `auth.json` after another `codex login`.
-8. Use `uv run switchgpt codex-sync` to project the active slot's imported Codex auth back to the live Codex auth path.
-9. Use `uv run switchgpt switch` for account rotation.
+2. Use `uv run sca doctor` to check local readiness.
+4. Use `uv run sca paths` to confirm repository-owned runtime locations.
+5. Use `uv run sca status` to inspect account state.
+6. Run `codex login`, then use `uv run sca add` or `uv run sca add --reauth <slot>` to manage account slots.
+7. Use `uv run sca import-codex-auth --slot <slot>` when you need to refresh a slot's stored Codex `auth.json` after another `codex login`.
+8. Use `uv run sca codex-sync` to project the active slot's imported Codex auth back to the live Codex auth path.
+9. Use `uv run sca switch` for account rotation.
 10. Run `uv run pytest` before merging changes.
 
 ## Local State Boundaries
@@ -41,7 +41,7 @@
 When Codex auth is missing or drifted, the intended operator flow is:
 
 1. `codex login`
-2. `uv run switchgpt import-codex-auth --slot <slot>`
-3. `uv run switchgpt codex-sync`
+2. `uv run sca import-codex-auth --slot <slot>`
+3. `uv run sca codex-sync`
 
-`switchgpt add` now imports the current live Codex auth automatically after slot creation. `switchgpt add --reauth` still imports Codex auth only when `--import-codex-auth` is passed.
+`sca add` and `sca add --reauth <slot>` import the current live Codex auth automatically after slot creation or reauthentication.

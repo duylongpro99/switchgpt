@@ -71,14 +71,14 @@ When one of your 3 ChatGPT Plus accounts hits its Codex usage limit, you are for
 
 | Command | Description |
 |---|---|
-| `switchgpt add` | Register the current Codex CLI account after manual `codex login` |
-| `switchgpt add --reauth 1` | Refresh metadata for an existing account slot after manual `codex login` |
-| `switchgpt import-codex-auth --slot 1` | Import the currently active Codex CLI `auth.json` into slot 1 after manual `codex login` |
-| `switchgpt codex-sync` | Project the active slot's previously imported Codex `auth.json` back to the live Codex auth path |
-| `switchgpt switch` | Manually switch to the next account in rotation by projecting stored Codex auth |
-| `switchgpt switch --to 2` | Switch to a specific account by index |
-| `switchgpt status` | Show all accounts, which is active, token expiry estimate, and limit reset times |
-| `switchgpt remove <index>` | Remove an account and its keychain entry from the store |
+| `sca add` | Register the current Codex CLI account after manual `codex login` |
+| `sca add --reauth 1` | Refresh metadata for an existing account slot after manual `codex login` |
+| `sca import-codex-auth --slot 1` | Import the currently active Codex CLI `auth.json` into slot 1 after manual `codex login` |
+| `sca codex-sync` | Project the active slot's previously imported Codex `auth.json` back to the live Codex auth path |
+| `sca switch` | Manually switch to the next account in rotation by projecting stored Codex auth |
+| `sca switch --to 2` | Switch to a specific account by index |
+| `sca status` | Show all accounts, which is active, token expiry estimate, and limit reset times |
+| `sca remove <index>` | Remove an account and its keychain entry from the store |
 
 ---
 
@@ -86,14 +86,14 @@ When one of your 3 ChatGPT Plus accounts hits its Codex usage limit, you are for
 
 SwitchGPT stores imported Codex CLI `auth.json` payloads per slot in the OS keychain, then projects the selected slot back to the live Codex auth file during `switch` or `codex-sync`.
 
-#### First-time login (`switchgpt add`) — runs once per account
+#### First-time login (`sca add`) — runs once per account
 
 ```
 codex login
     │
     ├─ user authenticates through Codex CLI
     ├─ Codex writes live ~/.codex/auth.json
-    ├─ switchgpt add
+    ├─ sca add
     ├─ tool imports the live auth.json into the new slot
     └─ non-secret fingerprint metadata stored → accounts.json
 ```
@@ -105,7 +105,7 @@ codex login
     │
     ├─ user authenticates in Codex CLI with the target account
     ├─ Codex writes live ~/.codex/auth.json
-    ├─ switchgpt import-codex-auth --slot N
+    ├─ sca import-codex-auth --slot N
     ├─ tool validates and fingerprints live auth.json
     ├─ raw auth.json stored securely → OS keychain
     └─ non-secret fingerprint metadata stored → accounts.json
@@ -114,7 +114,7 @@ codex login
 #### Every switch after that — no login, no OTP
 
 ```
-limit hit detected  (or: switchgpt switch)
+limit hit detected  (or: sca switch)
     │
     ├─ read next account from rotation queue
     ├─ fetch session token from OS keychain        ← silent, ~10 ms
@@ -143,7 +143,7 @@ When a stored browser token expires the page redirects to the login screen inste
 
 ```
 [switchgpt] ⚠  Session expired for account2@example.com
-[switchgpt]    Run: switchgpt add --reauth 1
+[switchgpt]    Run: sca add --reauth 1
 ```
 
 `--reauth` re-triggers the one-time login flow for that account slot only, refreshes the stored token, and normal rotation resumes.
@@ -152,8 +152,8 @@ When Codex auth is missing or drifted, the repair path is:
 
 ```bash
 codex login
-uv run switchgpt import-codex-auth --slot <slot>
-uv run switchgpt codex-sync
+uv run sca import-codex-auth --slot <slot>
+uv run sca codex-sync
 ```
 
 SwitchGPT no longer performs browser-driven Codex OAuth recovery in normal flows.
@@ -166,7 +166,7 @@ The limit detector triggers on any of the following signals:
 
 1. HTTP `429` with `X-RateLimit-Remaining: 0` on `/backend-api/` endpoints
 2. Page DOM contains `"You've reached your limit"` or `"GPT-4 is currently unavailable"`
-3. Manual trigger via `switchgpt switch`
+3. Manual trigger via `sca switch`
 
 On trigger, the tool:
 
@@ -241,7 +241,7 @@ switchgpt/
 }
 ```
 
-Sensitive values (session tokens) are stored **only** in the OS keychain, referenced by `keychain_key`. The JSON file contains no credentials. `token_captured_at` is used by `switchgpt status` to warn when a token is approaching its ~30 day expiry.
+Sensitive values (session tokens) are stored **only** in the OS keychain, referenced by `keychain_key`. The JSON file contains no credentials. `token_captured_at` is used by `sca status` to warn when a token is approaching its ~30 day expiry.
 
 ---
 
@@ -261,16 +261,16 @@ Accounts are selected using **least-recently-used + skip-if-limited** logic:
 - GUI or system tray app
 - Firefox support
 - Shared account pools across machines
-- Automatic token refresh (user re-runs `switchgpt add` when token expires)
+- Automatic token refresh (user re-runs `sca add` when token expires)
 
 ---
 
 ### Build order (recommended)
 
-1. `switchgpt add` — slot creation and current Codex auth import
-2. `switchgpt switch` — project stored Codex auth into the live auth file
-3. `switchgpt status` — account states, token age, limit reset times
-4. `switchgpt add --reauth` — refresh slot metadata after manual Codex login
+1. `sca add` — slot creation and current Codex auth import
+2. `sca switch` — project stored Codex auth into the live auth file
+3. `sca status` — account states, token age, limit reset times
+4. `sca add --reauth` — refresh slot metadata after manual Codex login
 
 ---
 

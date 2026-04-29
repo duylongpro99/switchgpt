@@ -9,6 +9,7 @@ from .codex_auth_sync import (
     CodexAuthSyncService,
     CodexEnvAuthTarget,
     CodexFileAuthTarget,
+    CodexTokenRefreshClient,
 )
 from .config import Settings
 from .doctor_service import DoctorService
@@ -60,6 +61,16 @@ class CodexSyncCommandService:
             codex_auth_json=getattr(secret, "codex_auth_json", None),
             occurred_at=datetime.now(UTC),
         )
+        refreshed_auth_json = getattr(result, "refreshed_auth_json", None)
+        if refreshed_auth_json is not None:
+            self._secret_store.replace(
+                account.keychain_key,
+                SessionSecret(
+                    session_token=secret.session_token,
+                    csrf_token=secret.csrf_token,
+                    codex_auth_json=refreshed_auth_json,
+                ),
+            )
         return result
 
 class CodexImportCommandService:
@@ -204,6 +215,7 @@ def build_codex_auth_sync_service(
             auth_file_path=runtime.settings.codex_auth_file_path,
         ),
         account_store=runtime.account_store,
+        refresh_client=CodexTokenRefreshClient(),
     )
 
 
@@ -267,4 +279,3 @@ def build_remove_command_service(
         runtime.account_store,
         runtime.secret_store,
     )
-

@@ -249,7 +249,7 @@ def test_summarize_reports_codex_sync_drift_when_active_slot_mismatches_last_syn
     assert summary.codex_sync.synced_at == datetime(2026, 4, 19, 9, 30, tzinfo=UTC)
     assert summary.codex_sync.error is None
     assert summary.next_action is not None
-    assert "switchgpt codex-sync" in summary.next_action
+    assert "sca codex-sync" in summary.next_action
 
 
 def test_summarize_reports_codex_sync_no_data_when_sync_metadata_missing() -> None:
